@@ -1,5 +1,5 @@
 /****************************************************************************
-   作者：牛牛牛小组
+   作者：平衡小车之家
    产品名称：Minibalance For Arduino
 ****************************************************************************/
 #include <DATASCOPE.h>      //这是PC端上位机的库文件
@@ -32,28 +32,15 @@ int Motor1, Motor2;      //电机叠加之后的PWM
 float Battery_Voltage;   //电池电压 单位是V
 volatile long Velocity_L, Velocity_R = 0;   //左右轮编码器数据
 int Velocity_Left, Velocity_Right = 0;     //左右轮速度
-// 蓝牙遥控指令常量定义 - 用于控制小车运动方向
-  // Flag_Qian：前进标志
-  // Flag_Hou：后退标志
-  // Flag_Left：左转标志
-  // Flag_Right：右转标志
+int Flag_Qian, Flag_Hou, Flag_Left, Flag_Right; //遥控相关变量
 int Angle, Show_Data,PID_Send;  //用于显示的角度和临时变量
-// 系统状态控制变量
-  unsigned char Flag_Stop = 1;     // 停止标志位：1为停止状态，0为运行状态
-  unsigned char Send_Count;        // 上位机数据发送计数
-  unsigned char Flash_Send;        // EEPROM参数保存标志
-// PID控制参数
-float Balance_Kp=15;   // 平衡环比例系数
-float Balance_Kd=0.4;  // 平衡环微分系数
-float Velocity_Kp=2;   // 速度环比例系数
-float Velocity_Ki=0.01; // 速度环积分系数
-//***************卡尔曼滤波相关变量***************//
-float K1 = 0.05;         // 对加速度计取值的权重
-float Q_angle = 0.001;   // 角度过程噪声协方差
-float Q_gyro = 0.005;    // 角速度过程噪声协方差
-float R_angle = 0.5;     // 测量噪声协方差
-float C_0 = 1;           // 测量矩阵系数
-float dt = 0.005;        // 滤波器采样时间，5ms（与控制周期一致）
+unsigned char Flag_Stop = 1,Send_Count,Flash_Send;  //停止标志位和上位机相关变量
+float Balance_Kp=15,Balance_Kd=0.4,Velocity_Kp=2,Velocity_Ki=0.01;
+//***************下面是卡尔曼滤波相关变量***************//
+float K1 = 0.05; // 对加速度计取值的权重
+float Q_angle = 0.001, Q_gyro = 0.005;
+float R_angle = 0.5 , C_0 = 1;
+float dt = 0.005; //注意：dt的取值为滤波器采样时间 5ms
 int addr = 0;
 /**************************************************************************
 函数功能：检测小车是否被拿起
@@ -84,7 +71,7 @@ int Pick_Up(float Acceleration, float Angle, int encoder_left, int encoder_right
   return 0;
 }
 /**************************************************************************
-函数功能：检测小车是否被放下 作者：牛牛牛小组
+函数功能：检测小车是否被放下 作者：平衡小车之家
 入口参数： 平衡倾角 左轮编码器 右轮编码器
 返回  值：0：无事件 1：小车放置并启动
 **************************************************************************/
@@ -108,7 +95,7 @@ int Put_Down(float Angle, int encoder_left, int encoder_right){
   return 0;
 }
 /**************************************************************************
-函数功能：异常关闭电机 作者：牛牛牛小组
+函数功能：异常关闭电机 作者：平衡小车之家
 入口参数：倾角和电池电压
 返回  值：1：异常  0：正常
 **************************************************************************/
@@ -125,7 +112,7 @@ unsigned char Turn_Off(float angle, float voltage)
   return temp;
 }
 /**************************************************************************
-函数功能：虚拟示波器往上位机发送数据 作者：牛牛牛小组
+函数功能：虚拟示波器往上位机发送数据 作者：平衡小车之家
 入口参数：无
 返回  值：无
 **************************************************************************/
@@ -144,10 +131,9 @@ void DataScope(void)
   delay(50);  //上位机必须严格控制发送时序
 }
 /**************************************************************************
-函数功能：按键扫描函数
-说明：检测按键单击事件，使用状态机方式实现防抖动
+函数功能：按键扫描  作者：平衡小车之家
 入口参数：无
-返回  值：按键状态，1：单击事件，0：无事件
+返回  值：按键状态，1：单击事件，0：无事件。
 **************************************************************************/
 unsigned char My_click(void){
   static unsigned char flag_key = 1; //按键按松开标志
@@ -162,17 +148,7 @@ unsigned char My_click(void){
   return 0;//无按键按下
 }
 /**************************************************************************
-函数功能：直立PD控制  作者：牛牛牛小组
-说明：使用PD控制算法保持小车直立
-      输入为角度和角速度，输出为平衡控制所需的PWM值
-算法原理：
-  1. 计算当前角度与目标角度（0度）的偏差Bias
-  2. 使用PD控制器计算平衡控制量：P项（比例）+ D项（微分）
-参数说明：
-  - Angle：当前小车倾角
-  - Gyro：角速度（用于D项控制）
-  - Balance_Kp：比例系数，用于调整角度偏差的响应强度
-  - Balance_Kd：微分系数，用于调整角速度响应强度，提高系统稳定性
+函数功能：直立PD控制  作者：平衡小车之家
 入口参数：角度、角速度
 返回  值：直立控制PWM
 **************************************************************************/
@@ -185,19 +161,7 @@ int balance(float Angle, float Gyro)
   return balance;
 }
 /**************************************************************************
-函数功能：速度PI控制 作者：牛牛牛小组
-说明：使用PI控制算法控制小车速度
-      根据编码器数据计算小车速度，并通过PI控制使小车保持目标速度
-算法原理：
-  1. 计算编码器数据的偏差（测量速度 - 目标速度）
-  2. 使用一阶低通滤波器平滑速度信号
-  3. 进行积分计算位移
-  4. 结合PI控制器计算速度控制量
-参数说明：
-  - encoder_left/encoder_right：左右轮编码器计数
-  - Velocity_Kp：比例系数
-  - Velocity_Ki：积分系数
-  - Movement：目标速度（由遥控指令设置）
+函数功能：速度PI控制 作者：平衡小车之家
 入口参数：左轮编码器、右轮编码器
 返回  值：速度控制PWM
 **************************************************************************/
@@ -227,18 +191,7 @@ int velocity(int encoder_left, int encoder_right)
   return Velocity;
 }
 /**************************************************************************
-函数功能：转向控制 作者：牛牛牛小组
-说明：使用PD控制算法控制小车转向
-      根据Z轴陀螺仪数据和遥控指令控制小车转向
-算法原理：
-  1. 根据遥控指令设置转向目标值Turn_Target
-  2. 使用PD控制器结合陀螺仪数据计算转向控制量
-参数说明：
-  - gyro：Z轴陀螺仪数据
-  - Turn_Target：转向目标值
-  - Turn_Amplitude：转向速度限幅值
-  - Kp：比例系数
-  - Kd：微分系数
+函数功能：转向控制 作者：平衡小车之家
 入口参数：Z轴陀螺仪
 返回  值：转向控制PWM
 **************************************************************************/
@@ -255,7 +208,7 @@ int turn(float gyro)//转向控制
   return Turn;
 }
 /**************************************************************************
-函数功能：赋值给PWM寄存器 作者：牛牛牛小组
+函数功能：赋值给PWM寄存器 作者：平衡小车之家
 入口参数：左轮PWM、右轮PWM
 返回  值：无
 **************************************************************************/
@@ -269,13 +222,7 @@ void Set_Pwm(int moto1, int moto2)
   analogWrite(PWMB, abs(moto2));//赋值给PWM寄存器
 }
 /**************************************************************************
-函数功能：限制PWM赋值  作者：牛牛牛小组
-说明：限制电机PWM输出范围，防止过大电流损坏硬件
-      同时处理小车机械差异补偿（DIFFERENCE变量）
-参数说明：
-  - Amplitude：PWM限制幅值，设置为250（PWM满幅为255）
-  - DIFFERENCE：小车电机和机械安装差异补偿值
-                直接作用于输出，让小车具有更好的一致性
+函数功能：限制PWM赋值  作者：平衡小车之家
 入口参数：无
 返回  值：无
 **************************************************************************/
@@ -290,17 +237,7 @@ void Xianfu_Pwm(void)
   if (Motor2 > Amplitude)  Motor2 = Amplitude;
 }
 /**************************************************************************
-函数功能：5ms控制函数 核心代码 作者：牛牛牛小组
-说明：系统核心控制函数，由定时器每5ms触发一次
-      主要功能：
-      1. 读取MPU6050传感器数据并进行卡尔曼滤波
-      2. 计算平衡PD控制量（每5ms）
-      3. 计算速度PI控制量（每40ms）
-      4. 计算转向PD控制量（每20ms）
-      5. 电机PWM合成与输出
-      6. 检测小车拿起/放下状态
-      7. 处理按键输入
-      8. 检测电池电压
+函数功能：5ms控制函数 核心代码 作者：平衡小车之家
 入口参数：无
 返回  值：无
 **************************************************************************/
@@ -339,7 +276,7 @@ void control()
   if(Voltage_Count==200) Battery_Voltage=Voltage_All*0.05371/200,Voltage_All=0,Voltage_Count=0;//求平均值
 }
 /**************************************************************************
-函数功能：初始化 相当于STM32里面的Main函数 作者：牛牛牛小组
+函数功能：初始化 相当于STM32里面的Main函数 作者：平衡小车之家
 入口参数：无
 返回  值：无
 **************************************************************************/
@@ -363,8 +300,6 @@ void setup() {
   pinMode(3, INPUT);       //按键引脚
   Wire.begin();             //加入 IIC 总线
   Serial.begin(9600);       //开启串口，设置波特率为 9600
-  // 注意：该串口同时用于蓝牙通信，蓝牙模块（如HC-05/HC-06）需设置相同波特率
-  // 蓝牙模块默认名称通常为"HC-05"或"HC-06"，可通过AT指令修改
   delay(1500);              //延时等待初始化完成
   Mpu6050.initialize();     //初始化MPU6050
   delay(20); 
@@ -381,145 +316,75 @@ void setup() {
 }
 /**************************************************************************
 函数功能：主循环程序体
-说明：根据小车状态执行不同的操作：
-      1. 正常运行状态（Flag_Stop == 0）：通过串口（包括蓝牙）发送小车状态数据和处理命令
-      2. 停止状态（Flag_Stop == 1）：切换到上位机通信模式，使用更高波特率发送调试数据
-      3. 处理EEPROM参数保存操作
-入口参数：无
-返回  值：无
-**************************************************************************/
-/**************************************************************************
-函数功能：串口命令处理函数，解析并执行来自网页PID调试上位机的命令
-说明：处理通过串口（包括蓝牙）发送的PID参数设置、读取和保存命令
-      与蓝牙通信使用相同的串口，但使用不同的命令格式
-命令格式：
-  - 设置PID参数: Ckp1:kd1:kp2:ki2$
-  - 请求PID参数: P$
-  - 保存PID参数: F$
-入口参数：无
-返回  值：无
-**************************************************************************/
-void processSerialCommands() {
-  static char commandBuffer[50];  // 命令缓冲区
-  static int bufferIndex = 0;
-  
-  while (Serial.available() > 0) {
-    char c = Serial.read();
-    
-    // 接收到命令结束符$时处理命令
-    if (c == '$') {
-      commandBuffer[bufferIndex] = '\0';  // 结束字符串
-      
-      // 处理命令
-      if (commandBuffer[0] == 'C') {  // 设置PID参数命令格式: Ckp1:kd1:kp2:ki2
-        int kp1, kd1, kp2, ki2;
-        sscanf(commandBuffer + 1, "%d:%d:%d:%d", &kp1, &kd1, &kp2, &ki2);
-        
-        // 更新PID参数
-        Balance_Kp = kp1 / 100.0;
-        Balance_Kd = kd1 / 100.0;
-        Velocity_Kp = kp2 / 100.0;
-        Velocity_Ki = ki2 / 100.0;
-        
-        // 可以在这里添加参数确认的回传
-        PID_Send = 1;  // 触发PID参数发送
-      } 
-      else if (commandBuffer[0] == 'P') {  // 请求PID参数命令
-        PID_Send = 1;  // 触发PID参数发送
-      }
-      else if (commandBuffer[0] == 'F') {  // 保存PID参数到EEPROM命令
-        Flash_Send = 1;  // 触发保存到EEPROM
-      }
-      
-      bufferIndex = 0;  // 重置缓冲区索引
-    } 
-    else if (bufferIndex < sizeof(commandBuffer) - 1) {
-      commandBuffer[bufferIndex++] = c;  // 填充缓冲区
-    }
-  }
-}
-
-/**************************************************************************
-函数功能：主循环程序体
 入口参数：无
 返回  值：无
 **************************************************************************/
 void loop() {
   int Voltage_Temp;
   static unsigned char flag;
+  unsigned char Balance_Kp_Temp=0,Balance_Kd_Temp=0,Velocity_Kp_Temp=0,Velocity_Ki_Temp=0;
   Voltage_Temp = (Battery_Voltage - 11.1) * 60;  //根据APP的协议对电池电压变量进行处理
-  if (Voltage_Temp > 100) Voltage_Temp = 100;
-  if (Voltage_Temp < 0) Voltage_Temp = 0;
-  
-  if (Flag_Stop == 0) {
-    // 确保串口以正确的波特率初始化
-    Serial.begin(9600);       // 开启串口，设置波特率为9600
-    // 注意：此处波特率必须与蓝牙模块设置一致
-    // 蓝牙模块默认波特率通常为9600
-    
-    // 处理串口命令
-    processSerialCommands();
-    
-    flag = !flag;
-    if (PID_Send == 1) {  // 发送PID参数
-      Serial.print("{C");
-      Serial.print((int)(Balance_Kp * 100));   // 平衡Kp
-      Serial.print(":");
-      Serial.print((int)(Balance_Kd * 100));  // 平衡Kd
-      Serial.print(":");
-      Serial.print((int)(Velocity_Kp * 100));  // 速度Kp
-      Serial.print(":");
-      Serial.print((int)(Velocity_Ki * 100));  // 速度Ki
-      Serial.print("}$");
-      PID_Send = 0; 
-    } 
-    else if (flag == 0) {
-      Serial.print("{A");
-      Serial.print(abs(Velocity_Left / 2));   // 左轮编码器
-      Serial.print(":");
-      Serial.print(abs(Velocity_Right / 2));  // 右轮编码器
-      Serial.print(":");
-      Serial.print(Voltage_Temp);  // 电池电压
-      Serial.print(":");
-      Serial.print(Angle);  // 平衡倾角
-      Serial.print("}$");
+  if (Voltage_Temp > 100)Voltage_Temp = 100;
+  if (Voltage_Temp < 0)Voltage_Temp = 0;
+  if (Flag_Stop == 0)
+  {
+    Serial.begin(9600);       //开启串口，设置波特率为 9600
+    flag=!flag;
+      if(PID_Send==1)//发送PID参数
+  {
+    Serial.print("{C");
+    Serial.print((int)(Balance_Kp*100));   //左轮编码器
+    Serial.print(":");
+    Serial.print((int)(Balance_Kd*100));  //右轮编码器
+    Serial.print(":");
+    Serial.print((int)(Velocity_Kp*100));  //电池电压
+    Serial.print(":");
+    Serial.print((int)(Velocity_Ki*100));  //平衡倾角
+    Serial.print("}$");
+    PID_Send=0; 
+  } 
+    else if(flag==0)
+    {
+    Serial.print("{A");
+    Serial.print(abs(Velocity_Left / 2));   //左轮编码器
+    Serial.print(":");
+    Serial.print(abs(Velocity_Right / 2));  //右轮编码器
+    Serial.print(":");
+    Serial.print(Voltage_Temp);  //电池电压
+    Serial.print(":");
+    Serial.print(Angle);  //平衡倾角
+    Serial.print("}$");
     }
-    else {
-      Serial.print("{B");
-      Serial.print(Angle);   
-      Serial.print(":");
-      Serial.print(Voltage_Temp);  
-      Serial.print(":");
-      Serial.print(Velocity_Left / 2); 
-      Serial.print(":");
-      Serial.print(Velocity_Right / 2); 
-      Serial.print("}$");
+      else
+    {
+    Serial.print("{B");
+    Serial.print(Angle);   
+    Serial.print(":");
+    Serial.print(Voltage_Temp);  
+    Serial.print(":");
+    Serial.print(Velocity_Left/2); 
+    Serial.print(":");
+    Serial.print(Velocity_Right/2); 
+    Serial.print("}$");
     }
     delay(50);
   }
-  else {
-    // 停止状态使用上位机模式
-    Serial.begin(128000);
-    // 注意：切换到上位机模式时，波特率从9600改为128000
-    // 此模式下蓝牙通信将无法正常工作，需使用USB连接上位机软件
-    DataScope();  // 使用上位机时，波特率是128000
-  }
-  
-  if (Flash_Send == 1) {  // 写入PID参数到EEPROM，由APP或网页控制该指令
-    EEPROM.write(addr,     ((unsigned int)(Balance_Kp * 100) & 0xff00) >> 8);
-    EEPROM.write(addr + 1, (unsigned int)(Balance_Kp * 100) & 0xff);
-    EEPROM.write(addr + 2, ((unsigned int)(Balance_Kd * 100) & 0xff00) >> 8);
-    EEPROM.write(addr + 3, (unsigned int)(Balance_Kd * 100) & 0xff);
-    EEPROM.write(addr + 4, ((unsigned int)(Velocity_Kp * 100) & 0xff00) >> 8);
-    EEPROM.write(addr + 5, (unsigned int)(Velocity_Kp * 100) & 0xff);
-    EEPROM.write(addr + 6, ((unsigned int)(Velocity_Ki * 100) & 0xff00) >> 8);
-    EEPROM.write(addr + 7, (unsigned int)(Velocity_Ki * 100) & 0xff);
-    Flash_Send = 0; 
-  }
+  else    Serial.begin(128000), DataScope(); //使用上位机时，波特率是128000
+    if(Flash_Send==1)        //写入PID参数到EEPROM,由app控制该指令
+    {
+     EEPROM.write(addr,     ((unsigned int)(Balance_Kp*100)&0xff00)>>8);
+     EEPROM.write(addr+1,   (unsigned int)(Balance_Kp*100)&0xff);
+     EEPROM.write(addr+2,   ((unsigned int)(Balance_Kd*100)&0xff00)>>8);
+     EEPROM.write(addr+3,   (unsigned int)(Balance_Kd*100)&0xff);
+     EEPROM.write(addr+4,   ((unsigned int)(Velocity_Kp*100)&0xff00)>>8);
+     EEPROM.write(addr+5,   (unsigned int)(Velocity_Kp*100)&0xff);
+     EEPROM.write(addr+6,   ((unsigned int)(Velocity_Ki*100)&0xff00)>>8);
+     EEPROM.write(addr+7,   (unsigned int)(Velocity_Ki*100)&0xff);
+     Flash_Send=0; 
+    } 
 }
 /**************************************************************************
-函数功能：外部中断读取编码器数据，具有二倍频功能
-说明：外部中断是跳变沿触发，通过检测两相信号的变化来确定旋转方向和计数
+函数功能：外部中断读取编码器数据，具有二倍频功能 注意外部中断是跳变沿触发
 入口参数：无
 返回  值：无
 **************************************************************************/
@@ -534,8 +399,7 @@ void READ_ENCODER_L() {
   }
 }
 /**************************************************************************
-函数功能：外部中断读取编码器数据，具有二倍频功能
-说明：外部中断是跳变沿触发，通过检测两相信号的变化来确定旋转方向和计数
+函数功能：外部中断读取编码器数据，具有二倍频功能 注意外部中断是跳变沿触发
 入口参数：无
 返回  值：无
 **************************************************************************/
@@ -550,11 +414,7 @@ void READ_ENCODER_R() {
   }
 }
 /**************************************************************************
-函数功能：串口接收中断处理函数
-说明：处理串口数据接收，包括PID参数指令和蓝牙遥控指令
-注意：蓝牙设备通信使用Serial接口，波特率为9600
-      代码中未明确设置蓝牙设备名称，实际使用中蓝牙模块（如HC-05/HC-06）的名称
-      需要通过AT指令进行设置，默认名称通常为"HC-05"或"HC-06"
+函数功能：串口接收中断
 入口参数：无
 返回  值：无
 **************************************************************************/
@@ -601,11 +461,7 @@ void serialEvent()
            j=0;
            Data=0;
      }
-      //===== 蓝牙遥控指令处理部分 ======
-      // 支持两种APP版本的控制指令：
-      // 1. MinibalanceV1.0版本APP：使用0x01-0x08指令控制小车运动
-      // 2. MinibalanceV3.5版本APP：使用0x41-0x48指令控制小车运动
-      // 蓝牙模块默认波特率为9600，与Arduino串口匹配
+       else  //蓝牙遥控指令
        {
               switch (Receive_Data)   {
                  //这是MinibalanceV1.0的APP发送指令
@@ -631,3 +487,4 @@ void serialEvent()
         }
    }
 }
+
