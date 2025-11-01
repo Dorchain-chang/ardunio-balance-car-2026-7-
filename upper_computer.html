@@ -519,15 +519,56 @@
                 const velocityKp = parseFloat(document.getElementById('velocity-kp').value);
                 const velocityKi = parseFloat(document.getElementById('velocity-ki').value);
                 
-                // 将参数转换为整数格式 (×100) 并发送
-                const command = `C${Math.round(balanceKp * 100)}:${Math.round(balanceKd * 100)}:${Math.round(velocityKp * 100)}:${Math.round(velocityKi * 100)}$`;
+                // 验证参数有效性
+                if (isNaN(balanceKp) || isNaN(balanceKd) || isNaN(velocityKp) || isNaN(velocityKi)) {
+                    logData("错误: 无效的PID参数值");
+                    return;
+                }
                 
-                const encoder = new TextEncoder();
+                // 将参数转换为整数格式 (×100)
+                const balanceKpInt = Math.round(balanceKp * 100);
+                const balanceKdInt = Math.round(balanceKd * 100);
+                const velocityKpInt = Math.round(velocityKp * 100);
+                const velocityKiInt = Math.round(velocityKi * 100);
+                
+                // 创建发送PID参数的函数
+                async function sendSingleParam(paramId, paramValue) {
+                    // 确保参数值为正整数
+                    const absValue = Math.abs(paramValue);
+                    
+                    // 将数字转换为4位字符串，不足前面补零
+                    const valueStr = absValue.toString().padStart(4, '0');
+                    
+                    // 将字符串转换为ASCII字符数组
+                    const digits = [];
+                    for (let i = 0; i < 4; i++) {
+                        digits.push(valueStr.charCodeAt(i));
+                    }
+                    
+                    // 根据Arduino代码中的协议格式创建命令
+                    // 起始位0x7B，参数ID，0x00，0x00，4位数字，结束位0x7D
+                    const buffer = new Uint8Array([0x7B, paramId, 0x00, 0x00, 
+                                                 digits[0], digits[1], digits[2], digits[3], 0x7D]);
+                    
+                    logData(`发送参数命令: ID=${paramId.toString(16)}, 值=${paramValue}, 十六进制: ${Array.from(buffer).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+                    await writer.write(buffer);
+                    // 添加短暂延迟确保Arduino有时间处理每个命令
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                }
+                
                 const writer = port.writable.getWriter();
-                await writer.write(encoder.encode(command));
-                writer.releaseLock();
                 
-                logData(`发送PID参数: ${command}`);
+                try {
+                    // 依次发送各个参数
+                    await sendSingleParam(0x30, balanceKpInt); // 平衡环Kp
+                    await sendSingleParam(0x31, balanceKdInt); // 平衡环Kd
+                    await sendSingleParam(0x32, velocityKpInt); // 速度环Kp
+                    await sendSingleParam(0x33, velocityKiInt); // 速度环Ki
+                    
+                    logData(`PID参数发送完成: Kp=${balanceKp}, Kd=${balanceKd}, VelKp=${velocityKp}, VelKi=${velocityKi}`);
+                } finally {
+                    writer.releaseLock();
+                }
             } catch (error) {
                 logData(`发送错误: ${error.message}`);
             }
@@ -541,15 +582,18 @@
             }
             
             try {
-                // 请求发送PID参数
-                const command = "P$";
+                // 根据Arduino代码中的协议格式，创建获取PID参数的命令
+                // 起始位0x7B，0x00，0x00，命令0x50，结束位0x7D
+                const commandBuffer = new Uint8Array([0x7B, 0x00, 0x00, 0x50, 0x7D]);
                 
-                const encoder = new TextEncoder();
                 const writer = port.writable.getWriter();
-                await writer.write(encoder.encode(command));
+                await writer.write(commandBuffer);
                 writer.releaseLock();
                 
                 logData("请求PID参数");
+                
+                // 设置接收PID参数的处理
+                await readPIDResponse();
             } catch (error) {
                 logData(`发送错误: ${error.message}`);
             }
@@ -563,17 +607,146 @@
             }
             
             try {
-                // 发送保存命令
-                const command = "F$";
+                // 根据Arduino代码中的协议格式，创建保存PID参数的命令
+                // 起始位0x7B，0x00，0x00，命令0x57，结束位0x7D
+                const commandBuffer = new Uint8Array([0x7B, 0x00, 0x00, 0x57, 0x7D]);
                 
-                const encoder = new TextEncoder();
                 const writer = port.writable.getWriter();
-                await writer.write(encoder.encode(command));
+                await writer.write(commandBuffer);
                 writer.releaseLock();
                 
                 logData("保存PID参数到EEPROM");
             } catch (error) {
                 logData(`发送错误: ${error.message}`);
+            }
+        }
+        
+        // 读取并解析PID参数响应
+        async function readPIDResponse() {
+            if (!port) return;
+            
+            const reader = port.readable.getReader();
+            let receivedData = [];
+            const maxResponseTime = 2000; // 最大响应时间2秒
+            const startTime = Date.now();
+            
+            try {
+                logData("开始读取PID参数响应...");
+                
+                // 循环读取直到收到完整响应或超时
+                while (Date.now() - startTime < maxResponseTime) {
+                    const { value, done } = await reader.read();
+                    
+                    if (done) {
+                        logData("串口连接已关闭");
+                        break;
+                    }
+                    
+                    if (value) {
+                        // 收集接收到的数据
+                        receivedData = receivedData.concat(Array.from(value));
+                        logData(`接收到 ${value.length} 字节数据`);
+                        
+                        // 尝试多种解析方式
+                        parsePIDResponse(receivedData);
+                    }
+                    
+                    // 如果接收的数据过长，停止读取
+                    if (receivedData.length > 200) {
+                        logData("接收数据过长，停止读取");
+                        break;
+                    }
+                    
+                    // 短暂延迟避免CPU占用过高
+                    await new Promise(resolve => setTimeout(resolve, 10));
+                }
+                
+                if (Date.now() - startTime >= maxResponseTime) {
+                    logData("读取PID参数超时");
+                }
+                
+                // 显示原始接收到的数据用于调试
+                if (receivedData.length > 0) {
+                    logData(`接收到的完整字节数据: [${receivedData.join(', ')}]`);
+                    logData(`接收到的ASCII文本: "${String.fromCharCode(...receivedData.filter(b => b >= 32 && b <= 126))}"`);
+                } else {
+                    logData("未接收到任何数据");
+                }
+            } catch (error) {
+                logData(`读取错误: ${error.message}`);
+            } finally {
+                reader.releaseLock();
+                logData("响应读取完成");
+            }
+        }
+        
+        // 解析PID参数响应
+        function parsePIDResponse(data) {
+            // 尝试解析Arduino返回的PID参数
+            try {
+                // 假设数据格式可能是类似 ":Kp:123:Kd:456:Vkp:789:Vki:012:" 的格式
+                const dataStr = String.fromCharCode(...data);
+                logData(`尝试解析响应: "${dataStr}"`);
+                
+                // 解析平衡环Kp
+                const kpMatch = dataStr.match(/:Kp:(\d+)/i);
+                if (kpMatch && kpMatch[1]) {
+                    const kpValue = parseInt(kpMatch[1]) / 100; // 除以100还原为浮点数
+                    document.getElementById('balance-kp').value = kpValue.toFixed(2);
+                    logData(`成功解析平衡环Kp: ${kpValue}`);
+                }
+                
+                // 解析平衡环Kd
+                const kdMatch = dataStr.match(/:Kd:(\d+)/i);
+                if (kdMatch && kdMatch[1]) {
+                    const kdValue = parseInt(kdMatch[1]) / 100;
+                    document.getElementById('balance-kd').value = kdValue.toFixed(2);
+                    logData(`成功解析平衡环Kd: ${kdValue}`);
+                }
+                
+                // 解析速度环Kp
+                const vkpMatch = dataStr.match(/:Vkp:(\d+)/i);
+                if (vkpMatch && vkpMatch[1]) {
+                    const vkpValue = parseInt(vkpMatch[1]) / 100;
+                    document.getElementById('velocity-kp').value = vkpValue.toFixed(2);
+                    logData(`成功解析速度环Kp: ${vkpValue}`);
+                }
+                
+                // 解析速度环Ki
+                const vkiMatch = dataStr.match(/:Vki:(\d+)/i);
+                if (vkiMatch && vkiMatch[1]) {
+                    const vkiValue = parseInt(vkiMatch[1]) / 100;
+                    document.getElementById('velocity-ki').value = vkiValue.toFixed(2);
+                    logData(`成功解析速度环Ki: ${vkiValue}`);
+                }
+                
+                // 尝试另一种可能的格式 - 直接数值格式
+                const numbers = dataStr.match(/\d+/g);
+                if (numbers && numbers.length >= 4) {
+                    // 如果之前的解析没有成功，尝试直接使用匹配到的数字
+                    if (!kpMatch) {
+                        const kpValue = parseInt(numbers[0]) / 100;
+                        document.getElementById('balance-kp').value = kpValue.toFixed(2);
+                        logData(`使用备选格式解析平衡环Kp: ${kpValue}`);
+                    }
+                    if (!kdMatch && numbers[1]) {
+                        const kdValue = parseInt(numbers[1]) / 100;
+                        document.getElementById('balance-kd').value = kdValue.toFixed(2);
+                        logData(`使用备选格式解析平衡环Kd: ${kdValue}`);
+                    }
+                    if (!vkpMatch && numbers[2]) {
+                        const vkpValue = parseInt(numbers[2]) / 100;
+                        document.getElementById('velocity-kp').value = vkpValue.toFixed(2);
+                        logData(`使用备选格式解析速度环Kp: ${vkpValue}`);
+                    }
+                    if (!vkiMatch && numbers[3]) {
+                        const vkiValue = parseInt(numbers[3]) / 100;
+                        document.getElementById('velocity-ki').value = vkiValue.toFixed(2);
+                        logData(`使用备选格式解析速度环Ki: ${vkiValue}`);
+                    }
+                }
+            } catch (e) {
+                logData(`解析响应时出错: ${e.message}`);
             }
         }
         
