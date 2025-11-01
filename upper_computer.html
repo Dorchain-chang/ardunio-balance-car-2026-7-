@@ -182,6 +182,8 @@
         // 全局变量
         let port;
         let reader;
+        let writer;
+        let reading = false;
         let angleChart, velocityChart, pwmChart, voltageChart;
         let angleData = [], velocityLeftData = [], velocityRightData = [], 
             pwm1Data = [], pwm2Data = [], voltageData = [], timeLabels = [];
@@ -374,6 +376,9 @@
                     baudRate: 9600
                 });
                 
+                // 获取writer并保存
+                writer = port.writable.getWriter();
+                
                 // 更新UI状态
                 document.getElementById('connect-btn').disabled = true;
                 document.getElementById('disconnect-btn').disabled = false;
@@ -394,13 +399,27 @@
         async function disconnectSerial() {
             if (port) {
                 try {
-                    // 停止读取器
+                    // 停止读取循环
+                    reading = false;
+                    
+                    // 关闭读取器
                     if (reader) {
                         await reader.cancel();
+                        reader.releaseLock();
+                    }
+                    
+                    // 关闭写入器
+                    if (writer) {
+                        writer.releaseLock();
                     }
                     
                     // 关闭端口
                     await port.close();
+                    
+                    // 重置变量
+                    port = null;
+                    reader = null;
+                    writer = null;
                     
                     // 更新UI状态
                     document.getElementById('connect-btn').disabled = false;
@@ -418,14 +437,16 @@
         
         // 开始读取串口数据
         async function startReading() {
-            if (!port) return;
+            if (!port || !port.readable) return;
+            
+            reading = true;
             
             try {
-                while (port.readable) {
-                    reader = port.readable.getReader();
-                    
+                while (reading && port.readable) {
                     try {
-                        while (true) {
+                        reader = port.readable.getReader();
+                        
+                        while (reading) {
                             const { value, done } = await reader.read();
                             if (done) break;
                             
@@ -435,9 +456,14 @@
                             processSerialData(data);
                         }
                     } catch (error) {
-                        logData(`读取错误: ${error.message}`);
+                        if (reading) { // 只有当我们仍在读取时才记录错误
+                            logData(`读取错误: ${error.message}`);
+                        }
                     } finally {
-                        reader.releaseLock();
+                        if (reader) {
+                            reader.releaseLock();
+                            reader = null;
+                        }
                     }
                 }
             } catch (error) {
@@ -506,6 +532,22 @@
             }
         }
         
+        // 发送数据到串口
+        async function writeToSerial(data) {
+            if (!port || !writer) {
+                logData("错误: 串口未连接或写入器不可用");
+                return false;
+            }
+            
+            try {
+                await writer.write(data);
+                return true;
+            } catch (error) {
+                logData(`写入错误: ${error.message}`);
+                return false;
+            }
+        }
+        
         // 发送PID参数
         async function sendPIDParams() {
             if (!port) {
@@ -551,23 +593,25 @@
                                                  digits[0], digits[1], digits[2], digits[3], 0x7D]);
                     
                     logData(`发送参数命令: ID=${paramId.toString(16)}, 值=${paramValue}, 十六进制: ${Array.from(buffer).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
-                    await writer.write(buffer);
-                    // 添加短暂延迟确保Arduino有时间处理每个命令
-                    await new Promise(resolve => setTimeout(resolve, 50));
+                    
+                    const success = await writeToSerial(buffer);
+                    if (success) {
+                        // 添加短暂延迟确保Arduino有时间处理每个命令
+                        await new Promise(resolve => setTimeout(resolve, 50));
+                    }
+                    return success;
                 }
                 
-                const writer = port.writable.getWriter();
+                // 依次发送各个参数
+                const success1 = await sendSingleParam(0x30, balanceKpInt); // 平衡环Kp
+                const success2 = await sendSingleParam(0x31, balanceKdInt); // 平衡环Kd
+                const success3 = await sendSingleParam(0x32, velocityKpInt); // 速度环Kp
+                const success4 = await sendSingleParam(0x33, velocityKiInt); // 速度环Ki
                 
-                try {
-                    // 依次发送各个参数
-                    await sendSingleParam(0x30, balanceKpInt); // 平衡环Kp
-                    await sendSingleParam(0x31, balanceKdInt); // 平衡环Kd
-                    await sendSingleParam(0x32, velocityKpInt); // 速度环Kp
-                    await sendSingleParam(0x33, velocityKiInt); // 速度环Ki
-                    
+                if (success1 && success2 && success3 && success4) {
                     logData(`PID参数发送完成: Kp=${balanceKp}, Kd=${balanceKd}, VelKp=${velocityKp}, VelKi=${velocityKi}`);
-                } finally {
-                    writer.releaseLock();
+                } else {
+                    logData("PID参数发送失败");
                 }
             } catch (error) {
                 logData(`发送错误: ${error.message}`);
@@ -586,14 +630,12 @@
                 // 起始位0x7B，0x00，0x00，命令0x50，结束位0x7D
                 const commandBuffer = new Uint8Array([0x7B, 0x00, 0x00, 0x50, 0x7D]);
                 
-                const writer = port.writable.getWriter();
-                await writer.write(commandBuffer);
-                writer.releaseLock();
-                
-                logData("请求PID参数");
-                
-                // 设置接收PID参数的处理
-                await readPIDResponse();
+                const success = await writeToSerial(commandBuffer);
+                if (success) {
+                    logData("请求PID参数");
+                } else {
+                    logData("请求PID参数失败");
+                }
             } catch (error) {
                 logData(`发送错误: ${error.message}`);
             }
@@ -611,142 +653,14 @@
                 // 起始位0x7B，0x00，0x00，命令0x57，结束位0x7D
                 const commandBuffer = new Uint8Array([0x7B, 0x00, 0x00, 0x57, 0x7D]);
                 
-                const writer = port.writable.getWriter();
-                await writer.write(commandBuffer);
-                writer.releaseLock();
-                
-                logData("保存PID参数到EEPROM");
+                const success = await writeToSerial(commandBuffer);
+                if (success) {
+                    logData("保存PID参数到EEPROM");
+                } else {
+                    logData("保存PID参数失败");
+                }
             } catch (error) {
                 logData(`发送错误: ${error.message}`);
-            }
-        }
-        
-        // 读取并解析PID参数响应
-        async function readPIDResponse() {
-            if (!port) return;
-            
-            const reader = port.readable.getReader();
-            let receivedData = [];
-            const maxResponseTime = 2000; // 最大响应时间2秒
-            const startTime = Date.now();
-            
-            try {
-                logData("开始读取PID参数响应...");
-                
-                // 循环读取直到收到完整响应或超时
-                while (Date.now() - startTime < maxResponseTime) {
-                    const { value, done } = await reader.read();
-                    
-                    if (done) {
-                        logData("串口连接已关闭");
-                        break;
-                    }
-                    
-                    if (value) {
-                        // 收集接收到的数据
-                        receivedData = receivedData.concat(Array.from(value));
-                        logData(`接收到 ${value.length} 字节数据`);
-                        
-                        // 尝试多种解析方式
-                        parsePIDResponse(receivedData);
-                    }
-                    
-                    // 如果接收的数据过长，停止读取
-                    if (receivedData.length > 200) {
-                        logData("接收数据过长，停止读取");
-                        break;
-                    }
-                    
-                    // 短暂延迟避免CPU占用过高
-                    await new Promise(resolve => setTimeout(resolve, 10));
-                }
-                
-                if (Date.now() - startTime >= maxResponseTime) {
-                    logData("读取PID参数超时");
-                }
-                
-                // 显示原始接收到的数据用于调试
-                if (receivedData.length > 0) {
-                    logData(`接收到的完整字节数据: [${receivedData.join(', ')}]`);
-                    logData(`接收到的ASCII文本: "${String.fromCharCode(...receivedData.filter(b => b >= 32 && b <= 126))}"`);
-                } else {
-                    logData("未接收到任何数据");
-                }
-            } catch (error) {
-                logData(`读取错误: ${error.message}`);
-            } finally {
-                reader.releaseLock();
-                logData("响应读取完成");
-            }
-        }
-        
-        // 解析PID参数响应
-        function parsePIDResponse(data) {
-            // 尝试解析Arduino返回的PID参数
-            try {
-                // 假设数据格式可能是类似 ":Kp:123:Kd:456:Vkp:789:Vki:012:" 的格式
-                const dataStr = String.fromCharCode(...data);
-                logData(`尝试解析响应: "${dataStr}"`);
-                
-                // 解析平衡环Kp
-                const kpMatch = dataStr.match(/:Kp:(\d+)/i);
-                if (kpMatch && kpMatch[1]) {
-                    const kpValue = parseInt(kpMatch[1]) / 100; // 除以100还原为浮点数
-                    document.getElementById('balance-kp').value = kpValue.toFixed(2);
-                    logData(`成功解析平衡环Kp: ${kpValue}`);
-                }
-                
-                // 解析平衡环Kd
-                const kdMatch = dataStr.match(/:Kd:(\d+)/i);
-                if (kdMatch && kdMatch[1]) {
-                    const kdValue = parseInt(kdMatch[1]) / 100;
-                    document.getElementById('balance-kd').value = kdValue.toFixed(2);
-                    logData(`成功解析平衡环Kd: ${kdValue}`);
-                }
-                
-                // 解析速度环Kp
-                const vkpMatch = dataStr.match(/:Vkp:(\d+)/i);
-                if (vkpMatch && vkpMatch[1]) {
-                    const vkpValue = parseInt(vkpMatch[1]) / 100;
-                    document.getElementById('velocity-kp').value = vkpValue.toFixed(2);
-                    logData(`成功解析速度环Kp: ${vkpValue}`);
-                }
-                
-                // 解析速度环Ki
-                const vkiMatch = dataStr.match(/:Vki:(\d+)/i);
-                if (vkiMatch && vkiMatch[1]) {
-                    const vkiValue = parseInt(vkiMatch[1]) / 100;
-                    document.getElementById('velocity-ki').value = vkiValue.toFixed(2);
-                    logData(`成功解析速度环Ki: ${vkiValue}`);
-                }
-                
-                // 尝试另一种可能的格式 - 直接数值格式
-                const numbers = dataStr.match(/\d+/g);
-                if (numbers && numbers.length >= 4) {
-                    // 如果之前的解析没有成功，尝试直接使用匹配到的数字
-                    if (!kpMatch) {
-                        const kpValue = parseInt(numbers[0]) / 100;
-                        document.getElementById('balance-kp').value = kpValue.toFixed(2);
-                        logData(`使用备选格式解析平衡环Kp: ${kpValue}`);
-                    }
-                    if (!kdMatch && numbers[1]) {
-                        const kdValue = parseInt(numbers[1]) / 100;
-                        document.getElementById('balance-kd').value = kdValue.toFixed(2);
-                        logData(`使用备选格式解析平衡环Kd: ${kdValue}`);
-                    }
-                    if (!vkpMatch && numbers[2]) {
-                        const vkpValue = parseInt(numbers[2]) / 100;
-                        document.getElementById('velocity-kp').value = vkpValue.toFixed(2);
-                        logData(`使用备选格式解析速度环Kp: ${vkpValue}`);
-                    }
-                    if (!vkiMatch && numbers[3]) {
-                        const vkiValue = parseInt(numbers[3]) / 100;
-                        document.getElementById('velocity-ki').value = vkiValue.toFixed(2);
-                        logData(`使用备选格式解析速度环Ki: ${vkiValue}`);
-                    }
-                }
-            } catch (e) {
-                logData(`解析响应时出错: ${e.message}`);
             }
         }
         
