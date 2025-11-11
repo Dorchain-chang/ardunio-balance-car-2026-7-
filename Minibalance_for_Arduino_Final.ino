@@ -326,12 +326,12 @@ void loop() {
   Voltage_Temp = (Battery_Voltage - 11.1) * 60;  //根据APP的协议对电池电压变量进行处理
   if (Voltage_Temp > 100)Voltage_Temp = 100;
   if (Voltage_Temp < 0)Voltage_Temp = 0;
-  if (Flag_Stop == 0)
+  //if (Flag_Stop == 0)
   {
-    Serial.begin(9600);       //开启串口，设置波特率为 9600
     flag=!flag;
-      if(PID_Send==1)//发送PID参数
-  {
+    if(PID_Send)//发送PID参数
+    {
+    Serial.print("接收到 发送PID参数 指令\n");
     Serial.print("{C");
     Serial.print((int)(Balance_Kp*100));   //左轮编码器
     Serial.print(":");
@@ -342,46 +342,46 @@ void loop() {
     Serial.print((int)(Velocity_Ki*100));  //平衡倾角
     Serial.print("}$");
     PID_Send=0; 
-  } 
+    }
     else if(flag==0)
     {
-    Serial.print("{A");
-    Serial.print(abs(Velocity_Left / 2));   //左轮编码器
-    Serial.print(":");
-    Serial.print(abs(Velocity_Right / 2));  //右轮编码器
-    Serial.print(":");
-    Serial.print(Voltage_Temp);  //电池电压
-    Serial.print(":");
-    Serial.print(Angle);  //平衡倾角
-    Serial.print("}$");
+      Serial.print("{A");
+      Serial.print(abs(Velocity_Left / 2));   //左轮编码器
+      Serial.print(":");
+      Serial.print(abs(Velocity_Right / 2));  //右轮编码器
+      Serial.print(":");
+      Serial.print(Voltage_Temp);  //电池电压
+      Serial.print(":");
+      Serial.print(Angle);  //平衡倾角
+      Serial.print("}$");
     }
-      else
+    else
     {
-    Serial.print("{B");
-    Serial.print(Angle);   
-    Serial.print(":");
-    Serial.print(Voltage_Temp);  
-    Serial.print(":");
-    Serial.print(Velocity_Left/2); 
-    Serial.print(":");
-    Serial.print(Velocity_Right/2); 
-    Serial.print("}$");
+      Serial.print("{B");
+      Serial.print(Angle);   
+      Serial.print(":");
+      Serial.print(Voltage_Temp);  
+      Serial.print(":");
+      Serial.print(Velocity_Left/2); 
+      Serial.print(":");
+      Serial.print(Velocity_Right/2); 
+      Serial.print("}$");
     }
-    delay(50);
   }
-  else    Serial.begin(128000), DataScope(); //使用上位机时，波特率是128000
-    if(Flash_Send==1)        //写入PID参数到EEPROM,由app控制该指令
-    {
-     EEPROM.write(addr,     ((unsigned int)(Balance_Kp*100)&0xff00)>>8);
-     EEPROM.write(addr+1,   (unsigned int)(Balance_Kp*100)&0xff);
-     EEPROM.write(addr+2,   ((unsigned int)(Balance_Kd*100)&0xff00)>>8);
-     EEPROM.write(addr+3,   (unsigned int)(Balance_Kd*100)&0xff);
-     EEPROM.write(addr+4,   ((unsigned int)(Velocity_Kp*100)&0xff00)>>8);
-     EEPROM.write(addr+5,   (unsigned int)(Velocity_Kp*100)&0xff);
-     EEPROM.write(addr+6,   ((unsigned int)(Velocity_Ki*100)&0xff00)>>8);
-     EEPROM.write(addr+7,   (unsigned int)(Velocity_Ki*100)&0xff);
-     Flash_Send=0; 
-    } 
+  // else    Serial.begin(128000), DataScope(); //使用上位机时，波特率是128000
+  if(Flash_Send==1)        //写入PID参数到EEPROM,由app控制该指令
+  {
+    EEPROM.write(addr,     ((unsigned int)(Balance_Kp*100)&0xff00)>>8);
+    EEPROM.write(addr+1,   (unsigned int)(Balance_Kp*100)&0xff);
+    EEPROM.write(addr+2,   ((unsigned int)(Balance_Kd*100)&0xff00)>>8);
+    EEPROM.write(addr+3,   (unsigned int)(Balance_Kd*100)&0xff);
+    EEPROM.write(addr+4,   ((unsigned int)(Velocity_Kp*100)&0xff00)>>8);
+    EEPROM.write(addr+5,   (unsigned int)(Velocity_Kp*100)&0xff);
+    EEPROM.write(addr+6,   ((unsigned int)(Velocity_Ki*100)&0xff00)>>8);
+    EEPROM.write(addr+7,   (unsigned int)(Velocity_Ki*100)&0xff);
+    Flash_Send=0; 
+  } 
+   serialEvent();
 }
 /**************************************************************************
 函数功能：外部中断读取编码器数据，具有二倍频功能 注意外部中断是跳变沿触发
@@ -422,21 +422,39 @@ void serialEvent()
 {    
     static unsigned char Flag_PID,Receive[10],Receive_Data,i,j;
    static float Data;
-
-   while (Serial.available()) {
-
+    while(Serial.available()) {
     Receive_Data=Serial.read();  
-    if(Receive_Data==0x7B) Flag_PID=1;  //参数指令起始位
-    if(Receive_Data==0x7D) Flag_PID=2;  //参数指令停止位
+    Serial.print("Receive Data is :");
+    Serial.print(Receive_Data, HEX);
+    Serial.print("\n");
+    if(Receive_Data==0x7B) {
+      Serial.print("Start of command\n");
+      Flag_PID=1;  //参数指令起始位
+    } 
+    else if(Receive_Data==0x7D) {
+      Serial.print("End of command\n");
+      Flag_PID=2;  //参数指令停止位
+    }
     if(Flag_PID==1)
      {
       Receive[i]=Receive_Data;     //记录数据
       i++;
      }
-    else  if(Flag_PID==2)  //执行指令
+    else if(Flag_PID==2)  //执行指令
      {
-           if(Receive[3]==0x50)          PID_Send=1;   //获取PID参数
-           else  if(Receive[3]==0x57)    Flash_Send=1; //掉电保存参数
+          Serial.print("Receive is :");
+            for(int k=0;k<i;k++) {
+              Serial.print(Receive[k],HEX);
+              Serial.print(" ");
+           }  
+          if(Receive[3]==0x50) {
+            PID_Send=1;   //获取PID参数
+            Serial.print("接收到 获取PID参数 指令\n");
+          }   
+           else  if(Receive[3]==0x57)    {
+            Flash_Send=1; //掉电保存参数
+            Serial.print("接收到 掉电保存参数 指令\n");
+           }
            else  if(Receive[1]!=0x23)    //更新PID参数
            {                
             for(j=i;j>=4;j--)
@@ -460,6 +478,8 @@ void serialEvent()
            i=0;
            j=0;
            Data=0;
+           // 清空Receive
+           memset(Receive, 0, sizeof(Receive));
      }
        else  //蓝牙遥控指令
        {
@@ -485,6 +505,5 @@ void serialEvent()
                   default: Flag_Qian = 0, Flag_Hou = 0, Flag_Left = 0, Flag_Right = 0;    break;                //停止
                 }
         }
-   }
+    }
 }
-

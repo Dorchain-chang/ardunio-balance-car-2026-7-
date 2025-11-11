@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>平衡车蓝牙串口调试工具</title>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+    <!-- 自定义样式 -->
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- 标题区域 -->
+        <div class="header">
+            <h1>🚗 平衡车蓝牙串口调试工具</h1>
+            <p>支持Web Bluetooth和Web Serial API，实时监控和PID调试</p>
+        </div>
+
+        <!-- 连接状态栏 -->
+        <div class="connection-bar">
+            <div class="status-badge">
+                <span id="connection-status" class="status-disconnected">⚫ 未连接</span>
+            </div>
+
+            <div class="button-group">
+                <button id="connect-bluetooth-btn" class="btn-primary">
+                    🔵 连接蓝牙
+                </button>
+                <button id="connect-serial-btn" class="btn-primary">
+                    🟢 连接串口
+                </button>
+                <button id="disconnect-btn" class="btn-danger" disabled>
+                    ⚫ 断开连接
+                </button>
+            </div>
+        </div>
+
+        <!-- 串口配置 -->
+        <div class="section">
+            <div class="input-group">
+                <label for="baudrate-select">串口波特率:</label>
+                <select id="baudrate-select">
+                    <option value="9600" selected>9600</option>
+                    <option value="19200">19200</option>
+                    <option value="38400">38400</option>
+                    <option value="57600">57600</option>
+                    <option value="115200">115200</option>
+                    <option value="128000">128000</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- 主要内容区域 -->
+        <div class="main-content">
+            <!-- 左侧控制面板 -->
+            <div class="control-panel">
+                <h2>🎮 控制面板</h2>
+
+                <!-- PID参数设置 -->
+                <div class="section">
+                    <h3>⚙️ PID参数设置</h3>
+                    <div class="pid-grid">
+                        <div class="input-group">
+                            <label for="balance-kp">平衡环 Kp:</label>
+                            <input type="number" id="balance-kp" step="0.1" value="15">
+                        </div>
+                        <div class="input-group">
+                            <label for="balance-kd">平衡环 Kd:</label>
+                            <input type="number" id="balance-kd" step="0.01" value="0.4">
+                        </div>
+                        <div class="input-group">
+                            <label for="velocity-kp">速度环 Kp:</label>
+                            <input type="number" id="velocity-kp" step="0.1" value="2">
+                        </div>
+                        <div class="input-group">
+                            <label for="velocity-ki">速度环 Ki:</label>
+                            <input type="number" id="velocity-ki" step="0.001" value="0.01">
+                        </div>
+                    </div>
+
+                    <div class="button-group" style="margin-top: 15px;">
+                        <button id="get-pid-btn" class="btn-success control-btn pid-btn" disabled>
+                            📥 获取PID
+                        </button>
+                        <button id="send-pid-btn" class="btn-primary control-btn pid-btn" disabled>
+                            📤 发送PID
+                        </button>
+                        <button id="save-pid-btn" class="btn-warning control-btn pid-btn" disabled>
+                            💾 保存到EEPROM
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 运动控制 -->
+                <div class="section">
+                    <h3>🕹️ 运动控制</h3>
+                    <div class="motion-control">
+                        <button id="forward-btn" class="motion-btn control-btn" disabled>⬆️ 前进</button>
+                        <button id="backward-btn" class="motion-btn control-btn" disabled>⬇️ 后退</button>
+                        <button id="left-btn" class="motion-btn control-btn" disabled>⬅️ 左转</button>
+                        <button id="right-btn" class="motion-btn control-btn" disabled>➡️ 右转</button>
+                        <button id="stop-btn" class="motion-btn btn-danger control-btn" disabled>⏹️ 停止</button>
+                    </div>
+                </div>
+
+                <!-- 传感器数据 -->
+                <div class="section">
+                    <h3>📊 传感器数据</h3>
+                    <div class="sensor-grid">
+                        <div class="sensor-item">
+                            <div class="label">平衡角度</div>
+                            <div id="angle-value" class="value">--</div>
+                        </div>
+                        <div class="sensor-item">
+                            <div class="label">电池电压</div>
+                            <div id="voltage-value" class="value">--</div>
+                        </div>
+                        <div class="sensor-item">
+                            <div class="label">左轮速度</div>
+                            <div id="left-velocity-value" class="value">--</div>
+                        </div>
+                        <div class="sensor-item">
+                            <div class="label">右轮速度</div>
+                            <div id="right-velocity-value" class="value">--</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 右侧图表面板 -->
+            <div class="charts-panel">
+                <h2>📈 实时数据图表</h2>
+
+                <div class="chart-container">
+                    <canvas id="angle-chart"></canvas>
+                </div>
+
+                <div class="chart-container">
+                    <canvas id="velocity-chart"></canvas>
+                </div>
+
+                <div class="chart-container">
+                    <canvas id="voltage-chart"></canvas>
+                </div>
+
+                <div class="button-group" style="margin-top: 15px;">
+                    <button id="clear-charts-btn" class="btn-secondary">
+                        🗑️ 清空图表
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 统计信息 -->
+        <div class="statistics">
+            <div class="stat-item">
+                <div class="stat-label">接收数据包</div>
+                <div id="packet-count" class="stat-value">0</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">错误计数</div>
+                <div id="error-count" class="stat-value">0</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">数据速率</div>
+                <div id="data-rate" class="stat-value">0 pkt/s</div>
+            </div>
+        </div>
+
+        <!-- 日志面板 -->
+        <div class="log-panel">
+            <div class="log-header">
+                <h2>📝 通信日志</h2>
+                <button id="clear-log-btn" class="btn-secondary">清空日志</button>
+            </div>
+            <div id="log-display"></div>
+        </div>
+    </div>
+
+    <!-- 加载JavaScript模块 -->
+    <script src="js/config.js"></script>
+    <script src="js/bluetooth.js"></script>
+    <script src="js/protocol.js"></script>
+    <script src="js/chart-manager.js"></script>
+    <script src="js/ui.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
+
