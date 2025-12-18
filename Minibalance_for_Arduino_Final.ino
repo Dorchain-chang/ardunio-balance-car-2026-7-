@@ -578,17 +578,7 @@ void READ_ENCODER_L() {
 void READ_ENCODER_R() {
   if (digitalRead(ENCODER_R) == LOW) {
     if (digitalRead(DIRECTION_R) == LOW) {
-      Velocity_R--;
-      Encoder_Right_Total--;
-    }
-    else {
-      Velocity_R++;
-      Encoder_Right_Total++;
-    }
-  }
-  else {
-    if (digitalRead(DIRECTION_R) == LOW) {
-      Velocity_R++;
+     
       Encoder_Right_Total++;
     }
     else {
