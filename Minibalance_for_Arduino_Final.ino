@@ -7,13 +7,20 @@
    2. 移除上位机和蓝牙交互
    3. 使用单编码器模式（左编码器）
    4. 串口调试输出（9600波特率）
+   5. 添加I2C主机功能，向ESP32发送编码器和MPU6050数据
    
    硬件要求：
-   - Arduino Uno
+   - Arduino Uno (I2C主机)
+   - ESP32 (I2C从机，地址0x55)
    - MPU6050 (I2C: A4/SDA, A5/SCL)
    - TB6612FNG电机驱动
    - 左编码器 (Pin 2 + Pin 5)
    - 按键 (Pin 3)
+   
+   I2C连接：
+   - Arduino SDA (A4) <--> ESP32 SDA
+   - Arduino SCL (A5) <--> ESP32 SCL
+   - 共地 GND <--> GND
 ****************************************************************************/
 #include <avr/wdt.h>  // 看门狗
 #include <Wire.h>
@@ -52,6 +59,31 @@
 #define C_0 1.0
 #define DT 0.005
 
+// ========== I2C通信参数 ==========
+#define ESP32_I2C_ADDR 0x55  // ESP32从机地址
+
+// I2C数据包结构（30字节，紧凑排列）
+struct I2C_Data_Packet {
+  // 帧头和校验
+  uint8_t header;           // 帧头：0xAA
+  uint8_t data_type;        // 数据类型：1=编码器+IMU
+  
+  // 编码器数据（8字节）
+  int32_t encoder_left;     // 左轮编码器计数
+  int32_t encoder_right;    // 右轮编码器计数
+  
+  // IMU数据（18字节）
+  int16_t accel_x;          // 加速度X
+  int16_t accel_y;          // 加速度Y
+  int16_t accel_z;          // 加速度Z
+  int16_t gyro_x;           // 角速度X
+  int16_t gyro_y;           // 角速度Y
+  int16_t gyro_z;           // 角速度Z
+  float angle;              // 卡尔曼滤波后的角度
+  
+  uint8_t checksum;         // 校验和
+} __attribute__((packed));  // 总计30字节，紧凑排列无填充
+
 // ========== 全局对象 ==========
 MPU6050 Mpu6050;
 KalmanFilter KalFilter;
@@ -65,6 +97,77 @@ volatile long Velocity_L = 0, Velocity_R = 0;
 int Velocity_Left = 0, Velocity_Right = 0;
 int Angle;
 unsigned char Flag_Stop = 1;
+
+// I2C通信变量
+I2C_Data_Packet i2c_packet;
+volatile long Encoder_Left_Total = 0;   // 累计编码器计数
+volatile long Encoder_Right_Total = 0;  // 累计编码器计数
+
+/**************************************************************************
+函数功能：计算校验和
+**************************************************************************/
+uint8_t Calculate_Checksum(uint8_t* data, uint8_t len) {
+  uint8_t sum = 0;
+  for (uint8_t i = 0; i < len; i++) {
+    sum += data[i];
+  }
+  return sum;
+}
+
+/**************************************************************************
+函数功能：向ESP32发送I2C数据
+**************************************************************************/
+void Send_Data_To_ESP32() {
+  static unsigned int send_count = 0;
+  
+  // 准备数据包
+  i2c_packet.header = 0xAA;
+  i2c_packet.data_type = 0x01;  // 同时发送编码器和IMU数据
+  
+  // 编码器数据（累计值）
+  i2c_packet.encoder_left = Encoder_Left_Total;
+  i2c_packet.encoder_right = Encoder_Right_Total;
+  
+  // IMU原始数据
+  i2c_packet.accel_x = ax;
+  i2c_packet.accel_y = ay;
+  i2c_packet.accel_z = az;
+  i2c_packet.gyro_x = gx;
+  i2c_packet.gyro_y = gy;
+  i2c_packet.gyro_z = gz;
+  
+  // 卡尔曼滤波后的角度
+  i2c_packet.angle = KalFilter.angle;
+  
+  // 计算校验和（不包括checksum字段本身，即前29字节）
+  i2c_packet.checksum = Calculate_Checksum((uint8_t*)&i2c_packet, sizeof(I2C_Data_Packet) - 1);
+  
+  // 通过I2C发送数据到ESP32
+  Wire.beginTransmission(ESP32_I2C_ADDR);
+  
+  // 逐字节发送数据包
+  uint8_t* data_ptr = (uint8_t*)&i2c_packet;
+  for (int i = 0; i < sizeof(I2C_Data_Packet); i++) {
+    Wire.write(data_ptr[i]);
+  }
+  
+  byte error = Wire.endTransmission();
+  
+  // 每100次发送输出一次调试信息（50ms*100=5秒）
+  if (++send_count >= 100) {
+    Serial.print("[I2C] Sent ");
+    Serial.print(sizeof(I2C_Data_Packet));
+    Serial.print(" bytes to 0x");
+    Serial.print(ESP32_I2C_ADDR, HEX);
+    Serial.print(" result=");
+    Serial.print(error);
+    Serial.print(" (0=OK) EncL=");
+    Serial.print(Encoder_Left_Total);
+    Serial.print(" EncR=");
+    Serial.println(Encoder_Right_Total);
+    send_count = 0;
+  }
+}
 
 /**************************************************************************
 函数功能：检测小车是否被拿起
@@ -227,7 +330,7 @@ void Xianfu_Pwm(void) {
 函数功能：5ms控制函数 - 核心代码
 **************************************************************************/
 void control() {
-  static int Velocity_Count, Turn_Count;
+  static int Velocity_Count, Turn_Count, I2C_Count;
   static float Voltage_All, Voltage_Count;
   int Temp;
   
@@ -283,6 +386,12 @@ void control() {
     Voltage_All = 0;
     Voltage_Count = 0;
   }
+  
+  // I2C数据发送，控制周期50ms（每10个5ms周期）
+  if (++I2C_Count >= 10) {
+    Send_Data_To_ESP32();
+    I2C_Count = 0;
+  }
 }
 
 /**************************************************************************
@@ -327,6 +436,9 @@ void setup() {
   Wire.setClock(100000L);
   delay(100);
   Serial.println("OK");
+  Serial.print("I2C packet size: ");
+  Serial.print(sizeof(I2C_Data_Packet));
+  Serial.println(" bytes");
   
   // MPU6050手动配置（使用纯Wire库）
   Serial.println("Config MPU6050:");
@@ -439,12 +551,24 @@ void loop() {
 **************************************************************************/
 void READ_ENCODER_L() {
   if (digitalRead(ENCODER_L) == LOW) {
-    if (digitalRead(DIRECTION_L) == LOW) Velocity_L--;
-    else Velocity_L++;
+    if (digitalRead(DIRECTION_L) == LOW) {
+      Velocity_L--;
+      Encoder_Left_Total--;
+    }
+    else {
+      Velocity_L++;
+      Encoder_Left_Total++;
+    }
   }
   else {
-    if (digitalRead(DIRECTION_L) == LOW) Velocity_L++;
-    else Velocity_L--;
+    if (digitalRead(DIRECTION_L) == LOW) {
+      Velocity_L++;
+      Encoder_Left_Total++;
+    }
+    else {
+      Velocity_L--;
+      Encoder_Left_Total--;
+    }
   }
 }
 
@@ -453,11 +577,23 @@ void READ_ENCODER_L() {
 **************************************************************************/
 void READ_ENCODER_R() {
   if (digitalRead(ENCODER_R) == LOW) {
-    if (digitalRead(DIRECTION_R) == LOW) Velocity_R--;
-    else Velocity_R++;
+    if (digitalRead(DIRECTION_R) == LOW) {
+      Velocity_R--;
+      Encoder_Right_Total--;
+    }
+    else {
+      Velocity_R++;
+      Encoder_Right_Total++;
+    }
   }
   else {
-    if (digitalRead(DIRECTION_R) == LOW) Velocity_R++;
-    else Velocity_R--;
+    if (digitalRead(DIRECTION_R) == LOW) {
+      Velocity_R++;
+      Encoder_Right_Total++;
+    }
+    else {
+      Velocity_R--;
+      Encoder_Right_Total--;
+    }
   }
 }
