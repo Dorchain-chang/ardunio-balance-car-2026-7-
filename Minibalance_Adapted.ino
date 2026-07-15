@@ -1,28 +1,28 @@
 /****************************************************************************
-   平衡小车代码 - 适配版
-   基于：Minibalance For Arduino
+  平衡小车代码 - 适配版
+  基于：Minibalance For Arduino
 
-   适配修改：
-   1. 移除ESP32 I2C通信模块（纯平衡控制）
-   2. 启用双编码器模式（PinChangeInt支持右编码器Pin 4）
-   3. 精简串口调试输出
-   4. 添加详细中文注释
+  适配修改：
+  1. 移除ESP32 I2C通信模块（纯平衡控制）
+  2. 启用双编码器模式（PinChangeInt支持右编码器Pin 4）
+  3. 精简串口调试输出
+  4. 添加详细中文注释
 
-   硬件连接：
-   参见下方接线说明，或打开串口监视器(9600波特率)查看启动信息
+  硬件连接：
+  参见下方接线说明，或打开串口监视器(9600波特率)查看启动信息
 
-   控制算法：
-   - 直立环（PD）：5ms周期，维持小车直立
-   - 速度环（PI）：40ms周期，控制前进速度
-   - 转向环：20ms周期（当前禁用）
+  控制算法：
+  - 直立环（PD）：5ms周期，维持小车直立
+  - 速度环（PI）：40ms周期，控制前进速度
+  - 转向环：20ms周期（当前禁用）
 
-   硬件要求：
-   - Arduino Uno
-   - MPU6050 陀螺仪加速度计模块
-   - TB6612FNG 电机驱动模块
-   - 2个带编码器的直流减速电机（11线双通道编码器）
-   - 按键开关（Pin 3，内部上拉）
-   - 电池（推荐7.4V-12V锂电池）
+  硬件要求：
+  - Arduino Uno
+  - MPU6050 陀螺仪加速度计模块
+  - TB6612FNG 电机驱动模块
+  - 2个带编码器的直流减速电机（11线双通道编码器）
+  - 按键开关（Pin 3，内部上拉）
+  - 电池（推荐7.4V-12V锂电池）
  ****************************************************************************/
 
 // ==================== 接线说明 ====================
@@ -106,15 +106,28 @@
 #define ENCODER_R 4
 #define DIRECTION_R 8
 
-// ========== 控制参数（可被RDK X5在运行时动态修改）==========
-float Target_Angle  = -2.3;   // 目标平衡角度/机械中值
-float Balance_Kp    = 10.0;   // 直立环P参数（比例）
-float Balance_Kd    = 0.5;    // 直立环D参数（微分/阻尼）
-float Velocity_Kp   = 1.2;    // 速度环P参数
-float Velocity_Ki   = 0.006;  // 速度环I参数（积分）
+// ========== 控制参数（最终调参版本）==========
+#define TARGET_ANGLE -1.0   // 目标平衡角度/机械中值
+                            // 如果小车向前倒，减小这个值（往负方向调）
+                            // 如果小车向后倒，增大这个值（往正方向调）
+                            // 范围通常在 -5 到 5 之间
 
-// ========== 安全限制（编译时固定，不可远程修改）==========
-#define PWM_MAX 200         // PWM最大幅值（150-255）
+#define BALANCE_KP 11.0      // 直立环P参数（比例）
+                            // 越大响应越快，但过大会震荡
+                            // 典型范围：5-25
+
+#define BALANCE_KD 0.8     // 直立环D参数（微分/阻尼）
+                            // 越大阻尼越强，减少震荡
+                            // 典型范围：0.1-0.8
+
+#define VELOCITY_KP 2.5     // 速度环P参数
+                            // 控制速度响应，典型范围：0.5-3.0
+
+#define VELOCITY_KI 0.011   // 速度环I参数（积分）
+                            // 消除稳态误差，典型范围：0.002-0.02
+
+#define PWM_MAX 180         // PWM最大幅值
+                            // 范围：150-255
 
 // ========== 卡尔曼滤波参数（一般不需修改）==========
 #define K1 0.05
@@ -147,12 +160,6 @@ unsigned char Flag_Stop = 1;  // 1=停止, 0=运行
 // 设置为false可关闭串口数据输出，减少串口开销
 bool enable_serial_output = true;
 
-// ========== RDK X5 上行通信配置 ==========
-// 向RDK X5上报IMU + 里程计 + 系统状态数据
-#define UPLINK_BAUD 115200          // 上行通信波特率（需与X5一致）
-#define UPLINK_INTERVAL_MS 20       // 上行发送间隔（50Hz）
-bool enable_uplink = true;          // 是否启用上行通信
-
 
 /**************************************************************************
  函数功能：直立PD控制
@@ -165,7 +172,7 @@ int balance(float Angle, float Gyro) {
   int balance_pwm;
 
   Bias = Angle - 0;
-  balance_pwm = Balance_Kp * Bias + Gyro * Balance_Kd;
+  balance_pwm = BALANCE_KP * Bias + Gyro * BALANCE_KD;
 
   return balance_pwm;
 }
@@ -195,7 +202,7 @@ int velocity(int encoder_left, int encoder_right) {
   if (Encoder_Integral > 21000)   Encoder_Integral = 21000;
   if (Encoder_Integral < -21000)  Encoder_Integral = -21000;
 
-  Velocity = Encoder * Velocity_Kp + Encoder_Integral * Velocity_Ki;
+  Velocity = Encoder * VELOCITY_KP + Encoder_Integral * VELOCITY_KI;
 
   // 停止时清除积分
   if (Turn_Off(KalFilter.angle, Battery_Voltage) == 1 || Flag_Stop == 1)
@@ -227,8 +234,8 @@ int Pick_Up(float Acceleration, float Angle, int encoder_left, int encoder_right
   if (flag == 1) {
     if (++count1 > 400) { count1 = 0; flag = 0; }
     if (Acceleration > 27000 &&
-        (Angle > (-14 + Target_Angle)) &&
-        (Angle < (14 + Target_Angle)))
+        (Angle > (-14 + TARGET_ANGLE)) &&
+        (Angle < (14 + TARGET_ANGLE)))
       flag = 2;
   }
 
@@ -251,8 +258,8 @@ int Put_Down(float Angle, int encoder_left, int encoder_right) {
   if (Flag_Stop == 0) return 0;
 
   if (flag == 0) {
-    if (Angle > (-10 + Target_Angle) &&
-        Angle < (10 + Target_Angle) &&
+    if (Angle > (-10 + TARGET_ANGLE) &&
+        Angle < (10 + TARGET_ANGLE) &&
         encoder_left == 0 && encoder_right == 0)
       flag = 1;
   }
@@ -371,7 +378,7 @@ void control() {
   Angle = KalFilter.angle;
 
   // 3. 直立PD控制（5ms周期）
-  Balance_Pwm = balance(KalFilter.angle + Target_Angle, KalFilter.Gyro_x);
+  Balance_Pwm = balance(KalFilter.angle + TARGET_ANGLE, KalFilter.Gyro_x);
 
   // 4. 速度PI控制（40ms周期，每8次5ms执行一次）
   if (++Velocity_Count >= 8) {
@@ -514,8 +521,8 @@ void setup() {
   // --- 按键引脚初始化 ---
   pinMode(KEY, INPUT);
 
-  // --- 串口初始化（与RDK X5通信 + 调试共用）---
-  Serial.begin(UPLINK_BAUD);
+  // --- 串口初始化 ---
+  Serial.begin(9600);
   delay(300);
   Serial.println(F("\n========================================"));
   Serial.println(F("    平衡小车 - 适配版 v1.1"));
@@ -667,17 +674,13 @@ void setup() {
 }
 
 /**************************************************************************
- 函数功能：主循环
-   - 200ms调试输出（可在运行中通过 enable_serial_output 关闭）
-   - 20ms上行数据上报到RDK X5（可通过 enable_uplink 关闭）
-   - 串口命令接收
+ 函数功能：主循环（200ms输出一次调试信息）
 **************************************************************************/
 void loop() {
   static unsigned long lastTime = 0;
-  static unsigned long lastUplink = 0;
   unsigned long currentTime = millis();
 
-  // --- 每200ms输出一次调试信息 ---
+  // 每200ms输出一次状态
   if (enable_serial_output && (currentTime - lastTime >= 200)) {
     Serial.print(F("Angle:"));
     Serial.print(Angle);
@@ -696,142 +699,6 @@ void loop() {
     Serial.println();
 
     lastTime = currentTime;
-  }
-
-  // --- 每20ms上报一次结构化数据给RDK X5 ---
-  if (enable_uplink && (currentTime - lastUplink >= UPLINK_INTERVAL_MS)) {
-    sendUplink();
-    lastUplink = currentTime;
-  }
-
-  // --- 接收并解析X5下发的命令 ---
-  recvCommand();
-}
-
-/**************************************************************************
- 函数功能：上行数据上报（50Hz，发送给RDK X5）
- 数据格式：$IMU,angle,gyro_x,gyro_z;ODO,l_total,r_total,l_vel,r_vel;STS,bat,stop\r\n
- 字段说明：
-   IMU:  angle     = 平衡倾角(°)
-         gyro_x    = X轴角速度(°/s，对应前后倾斜)
-         gyro_z    = Z轴角速度(°/s，对应水平旋转)
-   ODO:  l_total   = 左编码器累计脉冲数
-         r_total   = 右编码器累计脉冲数
-         l_vel     = 左轮瞬时速度(40ms脉冲数)
-         r_vel     = 右轮瞬时速度(40ms脉冲数)
-   STS:  battery   = 电池电压(V)
-         stop      = 启停状态(0=运行,1=停止)
-**************************************************************************/
-void sendUplink() {
-  // 构建上行数据包：$IMU,angle,gyro_x,gyro_z;ODO,l_total,r_total,l_vel,r_vel;STS,bat,stop
-  Serial.print(F("$IMU,"));
-  Serial.print(Angle);
-  Serial.print(F(","));
-  Serial.print(KalFilter.Gyro_x, 1);   // 1位小数
-  Serial.print(F(","));
-  Serial.print(KalFilter.Gyro_z, 1);
-  Serial.print(F(";ODO,"));
-  Serial.print(Encoder_Left_Total);
-  Serial.print(F(","));
-  Serial.print(Encoder_Right_Total);
-  Serial.print(F(","));
-  Serial.print(Velocity_Left);
-  Serial.print(F(","));
-  Serial.print(Velocity_Right);
-  Serial.print(F(";STS,"));
-  Serial.print(Battery_Voltage, 2);     // 2位小数
-  Serial.print(F(","));
-  Serial.print(Flag_Stop);
-  Serial.println();
-}
-
-/**************************************************************************
- 函数功能：接收并解析RDK X5下发的控制命令
- 命令格式：$CMD,操作码[,参数]\r\n
- 支持命令：
-   $CMD,START      - 启动平衡控制
-   $CMD,STOP       - 停止平衡控制
-   $CMD,KP,12.5    - 设置Balance_Kp
-   $CMD,KD,0.5     - 设置Balance_Kd
-   $CMD,VKP,1.2    - 设置Velocity_Kp
-   $CMD,VKI,0.006  - 设置Velocity_Ki
-   $CMD,TGT,-2.3   - 设置Target_Angle
-   $CMD,GET        - 回传当前PID参数
-   $CMD,RST        - 恢复默认PID参数
-**************************************************************************/
-void recvCommand() {
-  if (Serial.available() <= 0) return;
-
-  String cmd = Serial.readStringUntil('\n');
-  cmd.trim();
-  if (!cmd.startsWith(F("$CMD,"))) return;
-
-  // 解析操作码
-  int sep1 = cmd.indexOf(',', 5);  // 跳过"$CMD,"
-  String op = (sep1 == -1) ? cmd.substring(5)
-                            : cmd.substring(5, sep1);
-
-  // --- 启停控制 ---
-  if (op == F("START")) {
-    Flag_Stop = 0;
-    Serial.println(F("$ACK,START,OK"));
-
-  } else if (op == F("STOP")) {
-    Flag_Stop = 1;
-    Serial.println(F("$ACK,STOP,OK"));
-
-  // --- 动态修改PID参数 ---
-  } else if (op == F("KP") && sep1 != -1) {
-    float val = cmd.substring(sep1 + 1).toFloat();
-    if (val >= 1.0 && val <= 30.0) {
-      Balance_Kp = val;
-      Serial.print(F("$ACK,KP,")); Serial.println(val);
-    } else Serial.println(F("$NACK,KP,OUT_OF_RANGE"));
-
-  } else if (op == F("KD") && sep1 != -1) {
-    float val = cmd.substring(sep1 + 1).toFloat();
-    if (val >= 0.05 && val <= 2.0) {
-      Balance_Kd = val;
-      Serial.print(F("$ACK,KD,")); Serial.println(val);
-    } else Serial.println(F("$NACK,KD,OUT_OF_RANGE"));
-
-  } else if (op == F("VKP") && sep1 != -1) {
-    float val = cmd.substring(sep1 + 1).toFloat();
-    if (val >= 0.1 && val <= 8.0) {
-      Velocity_Kp = val;
-      Serial.print(F("$ACK,VKP,")); Serial.println(val);
-    } else Serial.println(F("$NACK,VKP,OUT_OF_RANGE"));
-
-  } else if (op == F("VKI") && sep1 != -1) {
-    float val = cmd.substring(sep1 + 1).toFloat();
-    if (val >= 0.001 && val <= 0.1) {
-      Velocity_Ki = val;
-      Serial.print(F("$ACK,VKI,")); Serial.println(val);
-    } else Serial.println(F("$NACK,VKI,OUT_OF_RANGE"));
-
-  } else if (op == F("TGT") && sep1 != -1) {
-    float val = cmd.substring(sep1 + 1).toFloat();
-    if (val >= -10.0 && val <= 10.0) {
-      Target_Angle = val;
-      Serial.print(F("$ACK,TGT,")); Serial.println(val);
-    } else Serial.println(F("$NACK,TGT,OUT_OF_RANGE"));
-
-  // --- 查询/恢复 ---
-  } else if (op == F("GET")) {
-    Serial.print(F("$PID,"));
-    Serial.print(Balance_Kp); Serial.print(F(","));
-    Serial.print(Balance_Kd); Serial.print(F(","));
-    Serial.print(Velocity_Kp); Serial.print(F(","));
-    Serial.print(Velocity_Ki); Serial.print(F(","));
-    Serial.println(Target_Angle);
-
-  } else if (op == F("RST")) {
-    Balance_Kp   = 10.0;
-    Balance_Kd   = 0.5;
-    Velocity_Kp  = 1.2;
-    Velocity_Ki  = 0.006;
-    Target_Angle = -2.3;
-    Serial.println(F("$ACK,RST,OK"));
   }
 }
 
