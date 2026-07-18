@@ -1,4 +1,4 @@
-/****************************************************************************
+ /****************************************************************************
   平衡小车 - Arduino 独立测试版
   基于 Minibalance_Nav.ino，移除 X5 通信，添加简单串口命令
 
@@ -46,20 +46,20 @@
 #define ENCODER_R 4
 #define DIRECTION_R 8
 
-// ========== 控制参数 ==========
+// ========== 控制参数（与原版 Minibalance_for_Arduino_Final 一致）==========
 float Calibration_Angle = 0;   // 校准角度：MPU6050在车子平衡时的读数（用 cal 命令自动获取）
-float Target_Angle  = -1.0;    // 微调角度（在校准基础上的偏移）
-float Balance_Kp    = 11.0;
-float Balance_Kd    = 0.8;
-float Velocity_Kp   = 2.5;
-float Velocity_Ki   = 0.011;
+float Target_Angle  = -2.3;    // 微调角度（在校准基础上的偏移，原版值）
+float Balance_Kp    = 15.0;
+float Balance_Kd    = 0.4;
+float Velocity_Kp   = 2.0;
+float Velocity_Ki   = 0.01;
 
 // ========== 运动控制目标 ==========
 float Target_Speed    = 0;
 float Target_Steering = 0;
 
 // ========== 安全限制 ==========
-#define PWM_MAX 180
+#define PWM_MAX 250
 
 // ========== 卡尔曼滤波参数 ==========
 #define K1 0.05
@@ -537,11 +537,11 @@ void parseCommand(String cmd) {
   // reset
   else if (cmd == F("reset")) {
     Calibration_Angle = 0;
-    Balance_Kp    = 11.0;
-    Balance_Kd    = 0.8;
-    Velocity_Kp   = 2.5;
-    Velocity_Ki   = 0.011;
-    Target_Angle  = -1.0;
+    Balance_Kp    = 15.0;
+    Balance_Kd    = 0.4;
+    Velocity_Kp   = 2.0;
+    Velocity_Ki   = 0.01;
+    Target_Angle  = -2.3;
     Target_Speed  = 0;
     Target_Steering = 0;
     Serial.println(F("[OK] 参数已恢复默认（含校准清零）"));
