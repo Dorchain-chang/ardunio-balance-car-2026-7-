@@ -130,7 +130,9 @@ int velocity(int encoder_left, int encoder_right) {
 }
 
 // ========== 转向控制 ==========
+bool turnEnabled = false;  // 默认关闭转向控制（与原版一致），需要时用 turnon 开启
 int turn(float gyro) {
+  if (!turnEnabled) return 0;
   float Turn_Kp = 1.0;
   float Turn_Kd = 0.02;
   return (int)(Target_Steering * Turn_Kp - gyro * Turn_Kd);
@@ -475,12 +477,22 @@ void parseCommand(String cmd) {
   }
 
   // steer: t20, t-15
-  else if (c == 't' && cmd.charAt(1) != 'a') {  // 避免与 "ta" 冲突
+  else if (c == 't' && cmd.charAt(1) != 'a' && cmd.charAt(1) != 'u') {  // 避免与 "ta" "turn" 冲突
     float v = rest.toFloat();
     if (v >= -200 && v <= 200) {
       Target_Steering = v;
       Serial.print(F("[OK] 目标转向 = ")); Serial.println(v);
     } else Serial.println(F("[ERR] 转向范围: -200 ~ 200"));
+  }
+
+  // turnon / turnoff: 开启/关闭转向控制（默认关闭，与原版一致）
+  else if (cmd == F("turnon")) {
+    turnEnabled = true;
+    Serial.println(F("[OK] 转向控制已开启"));
+  }
+  else if (cmd == F("turnoff")) {
+    turnEnabled = false;
+    Serial.println(F("[OK] 转向控制已关闭（纯平衡模式）"));
   }
 
   // ta: target angle（微调，校准基础上的偏移）
