@@ -1,4 +1,4 @@
-     /****************************************************************************
+      /****************************************************************************
   平衡小车 - Arduino 独立测试版
   基于 Minibalance_Nav.ino，移除 X5 通信，添加简单串口命令
 
@@ -142,13 +142,19 @@ int turn(float gyro, long encL_total, long encR_total) {
 
   static long lastEncL = 0, lastEncR = 0;
   static float turnIntegral = 0;
-
-  // 编码器差值 = 实际转向速率
   float actualTurn = (encL_total - lastEncL) - (encR_total - lastEncR);
   lastEncL = encL_total;
   lastEncR = encR_total;
 
-  // PI控制：Target_Steering 为目标转向差速
+  float gyro_damp = (gyro - Gyro_Z_Offset) * Turn_Kd;
+
+  // Target_Steering=0时，只用陀螺仪阻尼维持直行，编码器反馈只跟随主动转向
+  if (Target_Steering == 0) {
+    turnIntegral = 0;
+    return -(int)(gyro_damp);
+  }
+
+  // 主动转向时：编码器差值 + 陀螺仪阻尼 PI闭环
   float error = Target_Steering - actualTurn;
   turnIntegral += error * Turn_Ki;
   turnIntegral = constrain(turnIntegral, -500, 500);
@@ -156,7 +162,6 @@ int turn(float gyro, long encL_total, long encR_total) {
   if (Turn_Off(KalFilter.angle, Battery_Voltage) == 1 || Flag_Stop == 1)
     turnIntegral = 0;
 
-  float gyro_damp = (gyro - Gyro_Z_Offset) * Turn_Kd;
   return (int)(error * Turn_Kp + turnIntegral - gyro_damp);
 }
 
