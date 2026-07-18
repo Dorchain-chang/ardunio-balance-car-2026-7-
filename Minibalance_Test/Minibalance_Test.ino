@@ -134,9 +134,30 @@ int velocity(int encoder_left, int encoder_right) {
 bool turnEnabled = false;  // 默认关闭转向，需用 turnon 开启
 float Turn_Kp = 1.0;
 float Turn_Kd = 0.02;
-int turn(float gyro) {
+float Turn_Ki = 0.05;
+float Gyro_Z_Offset = 0;
+
+int turn(float gyro, long encL_total, long encR_total) {
   if (!turnEnabled) return 0;
-  return (int)(Target_Steering * Turn_Kp - gyro * Turn_Kd);
+
+  static long lastEncL = 0, lastEncR = 0;
+  static float turnIntegral = 0;
+
+  // 编码器差值 = 实际转向速率
+  float actualTurn = (encL_total - lastEncL) - (encR_total - lastEncR);
+  lastEncL = encL_total;
+  lastEncR = encR_total;
+
+  // PI控制：Target_Steering 为目标转向差速
+  float error = Target_Steering - actualTurn;
+  turnIntegral += error * Turn_Ki;
+  turnIntegral = constrain(turnIntegral, -500, 500);
+
+  if (Turn_Off(KalFilter.angle, Battery_Voltage) == 1 || Flag_Stop == 1)
+    turnIntegral = 0;
+
+  float gyro_damp = (gyro - Gyro_Z_Offset) * Turn_Kd;
+  return (int)(error * Turn_Kp + turnIntegral - gyro_damp);
 }
 
 // ========== 拿起检测 ==========
@@ -264,7 +285,7 @@ void control() {
 
   // 5. 转向 (20ms)
   if (++Turn_Count >= 4) {
-    Turn_Pwm = turn(gz);
+    Turn_Pwm = turn(gz, Encoder_Left_Total, Encoder_Right_Total);
     Turn_Count = 0;
   }
 
@@ -356,6 +377,11 @@ void printHelp() {
   Serial.println(F("  kd<N>     设置 Balance_Kd  例: kd0.8"));
   Serial.println(F("  vkp<N>    设置 Velocity_Kp 例: vkp2.5"));
   Serial.println(F("  vki<N>    设置 Velocity_Ki 例: vki0.011"));
+  Serial.println(F("  tp<N>     设置 Turn_Kp      例: tp1.0"));
+  Serial.println(F("  td<N>     设置 Turn_Kd      例: td0.02"));
+  Serial.println(F("  ti<N>     设置 Turn_Ki      例: ti0.05"));
+  Serial.println(F("  turnon    开启转向控制"));
+  Serial.println(F("  turnoff   关闭转向控制（默认）"));
   Serial.println(F("  info      显示当前参数"));
   Serial.println(F("  reset     恢复默认参数"));
   Serial.println(F("  test      运行自动测试序列"));
@@ -376,6 +402,11 @@ void printInfo() {
   Serial.print(F("  Target_Speed  = ")); Serial.println(Target_Speed);
   Serial.print(F("  Target_Steering= ")); Serial.println(Target_Steering);
   Serial.print(F("  Speed_Angle_P  = ")); Serial.println(Speed_Angle_P);
+  Serial.print(F("  Turn_Kp       = ")); Serial.println(Turn_Kp);
+  Serial.print(F("  Turn_Kd       = ")); Serial.println(Turn_Kd);
+  Serial.print(F("  Turn_Ki       = ")); Serial.println(Turn_Ki);
+  Serial.print(F("  Gyro_Z_Offset = ")); Serial.println(Gyro_Z_Offset);
+  Serial.print(F("  TurnEnabled   = ")); Serial.println(turnEnabled ? F("ON") : F("OFF"));
   Serial.print(F("  Battery       = ")); Serial.print(Battery_Voltage); Serial.println(F("V"));
   Serial.print(F("  Stop          = ")); Serial.println(Flag_Stop ? F("YES") : F("NO"));
   Serial.println(F("==============================="));
@@ -551,6 +582,27 @@ void parseCommand(String cmd) {
     else Serial.println(F("[ERR] VKI 范围: 0.001 ~ 0.1"));
   }
 
+  // tp: turn Kp
+  else if (cmd.startsWith(F("tp"))) {
+    float v = rest.toFloat();
+    if (v >= 0.1 && v <= 5) { Turn_Kp = v; Serial.print(F("[OK] Turn_Kp = ")); Serial.println(v); }
+    else Serial.println(F("[ERR] Turn_Kp 范围: 0.1 ~ 5"));
+  }
+
+  // td: turn Kd
+  else if (cmd.startsWith(F("td"))) {
+    float v = rest.toFloat();
+    if (v >= 0 && v <= 0.2) { Turn_Kd = v; Serial.print(F("[OK] Turn_Kd = ")); Serial.println(v); }
+    else Serial.println(F("[ERR] Turn_Kd 范围: 0 ~ 0.2"));
+  }
+
+  // ti: turn Ki
+  else if (cmd.startsWith(F("ti"))) {
+    float v = rest.toFloat();
+    if (v >= 0 && v <= 0.3) { Turn_Ki = v; Serial.print(F("[OK] Turn_Ki = ")); Serial.println(v); }
+    else Serial.println(F("[ERR] Turn_Ki 范围: 0 ~ 0.3"));
+  }
+
   // info
   else if (cmd == F("info")) {
     printInfo();
@@ -566,6 +618,10 @@ void parseCommand(String cmd) {
     Target_Angle  = -2.3;
     Target_Speed  = 0;
     Target_Steering = 0;
+    Speed_Angle_P  = 0.06;
+    Turn_Kp        = 1.0;
+    Turn_Kd        = 0.02;
+    Turn_Ki        = 0.05;
     Serial.println(F("[OK] 参数已恢复默认（含校准清零）"));
   }
 
@@ -693,6 +749,18 @@ void setup() {
   I2C_WriteReg(0x68, 0x1C, 0x00, 3);  // 加速度计 ±2g
   I2C_WriteReg(0x68, 0x1A, 0x06, 3);  // DLPF 5Hz
   Serial.println(F("[OK] MPU6050 配置完成"));
+
+  // 陀螺仪Z轴零点校准
+  Serial.println(F("[校准] 陀螺仪Z轴零点校准中，请保持静止..."));
+  float gzSum = 0;
+  for (int i = 0; i < 200; i++) {
+    int ax_c, ay_c, az_c, gx_c, gy_c, gz_c;
+    Mpu6050.getMotion6(&ax_c, &ay_c, &az_c, &gx_c, &gy_c, &gz_c);
+    gzSum += gz_c;
+    delay(5);
+  }
+  Gyro_Z_Offset = gzSum / 200;
+  Serial.print(F("[OK] 陀螺仪Z轴零点 = ")); Serial.println(Gyro_Z_Offset);
 
   // 左编码器中断
   pinMode(ENCODER_L, INPUT_PULLUP);
