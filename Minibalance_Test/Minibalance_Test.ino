@@ -131,7 +131,7 @@ int velocity(int encoder_left, int encoder_right) {
 }
 
 // ========== 转向控制 ==========
-bool turnEnabled = true;   // 默认开启转向控制
+bool turnEnabled = false;  // 默认关闭转向，需用 turnon 开启
 float Turn_Kp = 1.0;
 float Turn_Kd = 0.02;
 int turn(float gyro) {
