@@ -106,28 +106,21 @@
 #define ENCODER_R 4
 #define DIRECTION_R 8
 
-// ========== 控制参数（最终调参版本）==========
-#define TARGET_ANGLE -1.0   // 目标平衡角度/机械中值
-                            // 如果小车向前倒，减小这个值（往负方向调）
-                            // 如果小车向后倒，增大这个值（往正方向调）
-                            // 范围通常在 -5 到 5 之间
+// ========== 控制参数（运行时变量，可被X5远程修改）==========
+float Target_Angle  = -1.0;   // 目标平衡角度/机械中值（向前倒减，向后倒加，范围-5~5）
+float Balance_Kp    = 11.0;   // 直立环P参数（比例，范围5-25）
+float Balance_Kd    = 0.8;    // 直立环D参数（微分/阻尼，范围0.1-2.0）
+float Velocity_Kp   = 2.5;    // 速度环P参数（范围0.5-3.0）
+float Velocity_Ki   = 0.011;  // 速度环I参数（积分，范围0.002-0.02）
 
-#define BALANCE_KP 11.0      // 直立环P参数（比例）
-                            // 越大响应越快，但过大会震荡
-                            // 典型范围：5-25
+// ========== 运动控制目标（RDK X5 导航系统设定）==========
+float Target_Speed    = 0;     // 目标前进速度（编码器脉冲/40ms，正=前进）
+                                // 典型范围：±200，取决于电池电量和地面
+float Target_Steering = 0;     // 目标转向量（正=右转，负=左转）
+                                // 典型范围：±100
 
-#define BALANCE_KD 0.8     // 直立环D参数（微分/阻尼）
-                            // 越大阻尼越强，减少震荡
-                            // 典型范围：0.1-0.8
-
-#define VELOCITY_KP 2.5     // 速度环P参数
-                            // 控制速度响应，典型范围：0.5-3.0
-
-#define VELOCITY_KI 0.011   // 速度环I参数（积分）
-                            // 消除稳态误差，典型范围：0.002-0.02
-
-#define PWM_MAX 180         // PWM最大幅值
-                            // 范围：150-255
+// ========== 安全限制（编译时常量，不可远程修改）==========
+#define PWM_MAX 180           // PWM最大幅值（150-255）
 
 // ========== 卡尔曼滤波参数（一般不需修改）==========
 #define K1 0.05
@@ -157,8 +150,13 @@ int Angle;
 unsigned char Flag_Stop = 1;  // 1=停止, 0=运行
 
 // ========== 调试输出控制 ==========
-// 设置为false可关闭串口数据输出，减少串口开销
-bool enable_serial_output = true;
+bool enable_serial_output = true;   // false=关闭调试输出，减少串口开销
+
+// ========== RDK X5 上行通信配置 ==========
+// 向RDK X5上报IMU + 里程计 + 系统状态
+#define X5_BAUDRATE 115200          // 与X5通信波特率
+#define X5_UPLINK_MS 20             // 上行发送间隔（50Hz）
+bool enable_x5_uplink = true;       // 是否启用上行数据上报
 
 
 /**************************************************************************
@@ -172,7 +170,7 @@ int balance(float Angle, float Gyro) {
   int balance_pwm;
 
   Bias = Angle - 0;
-  balance_pwm = BALANCE_KP * Bias + Gyro * BALANCE_KD;
+  balance_pwm = Balance_Kp * Bias + Gyro * Balance_Kd;
 
   return balance_pwm;
 }
@@ -185,15 +183,23 @@ int balance(float Angle, float Gyro) {
 **************************************************************************/
 int velocity(int encoder_left, int encoder_right) {
   static float Velocity, Encoder_Least, Encoder, Movement;
-  static float Encoder_Integral, Target_Velocity;
+  static float Encoder_Integral;
 
   Movement = 0;
+
+  // 恢复运动时清除积分，避免积分残留导致突变
+  static float lastTarget = 0;
+  if (Target_Speed != lastTarget) {
+    Encoder_Integral = 0;
+    lastTarget = Target_Speed;
+  }
 
   // 积分限幅，防止积分饱和
   if (Encoder_Integral > 300)   Encoder_Integral -= 200;
   if (Encoder_Integral < -300)  Encoder_Integral += 200;
 
-  Encoder_Least = (encoder_left + encoder_right) - 0;
+  // ★ 核心修改：目标速度 Target_Speed 替代原来的硬编码 0
+  Encoder_Least = (encoder_left + encoder_right) - Target_Speed;
   Encoder *= 0.7;
   Encoder += Encoder_Least * 0.3;
   Encoder_Integral += Encoder;
@@ -202,9 +208,9 @@ int velocity(int encoder_left, int encoder_right) {
   if (Encoder_Integral > 21000)   Encoder_Integral = 21000;
   if (Encoder_Integral < -21000)  Encoder_Integral = -21000;
 
-  Velocity = Encoder * VELOCITY_KP + Encoder_Integral * VELOCITY_KI;
+  Velocity = Encoder * Velocity_Kp + Encoder_Integral * Velocity_Ki;
 
-  // 停止时清除积分
+  // 停止/异常时清除积分
   if (Turn_Off(KalFilter.angle, Battery_Voltage) == 1 || Flag_Stop == 1)
     Encoder_Integral = 0;
 
@@ -215,8 +221,15 @@ int velocity(int encoder_left, int encoder_right) {
  函数功能：转向控制（当前版本禁用）
 **************************************************************************/
 int turn(float gyro) {
-  // 如果将来需要遥控转向，在这里实现
-  return 0;
+  // 转向控制：Target_Steering 决定目标转向量
+  //   Target_Steering > 0 → 右转（左轮快，右轮慢）
+  //   Target_Steering < 0 → 左转（右轮快，左轮慢）
+  // Z轴角速度 gyro 作为阻尼（正在右转时 gyro>0，产生反向抑制）
+  float Turn_Kp = 1.0;   // 转向比例系数（调大=转向更猛）
+  float Turn_Kd = 0.02;  // 陀螺仪阻尼系数（调大=转向更稳但响应慢）
+
+  float turn_pwm = Target_Steering * Turn_Kp - gyro * Turn_Kd;
+  return (int)turn_pwm;
 }
 
 /**************************************************************************
@@ -234,8 +247,8 @@ int Pick_Up(float Acceleration, float Angle, int encoder_left, int encoder_right
   if (flag == 1) {
     if (++count1 > 400) { count1 = 0; flag = 0; }
     if (Acceleration > 27000 &&
-        (Angle > (-14 + TARGET_ANGLE)) &&
-        (Angle < (14 + TARGET_ANGLE)))
+        (Angle > (-14 + Target_Angle)) &&
+        (Angle < (14 + Target_Angle)))
       flag = 2;
   }
 
@@ -258,8 +271,8 @@ int Put_Down(float Angle, int encoder_left, int encoder_right) {
   if (Flag_Stop == 0) return 0;
 
   if (flag == 0) {
-    if (Angle > (-10 + TARGET_ANGLE) &&
-        Angle < (10 + TARGET_ANGLE) &&
+    if (Angle > (-10 + Target_Angle) &&
+        Angle < (10 + Target_Angle) &&
         encoder_left == 0 && encoder_right == 0)
       flag = 1;
   }
@@ -378,7 +391,7 @@ void control() {
   Angle = KalFilter.angle;
 
   // 3. 直立PD控制（5ms周期）
-  Balance_Pwm = balance(KalFilter.angle + TARGET_ANGLE, KalFilter.Gyro_x);
+  Balance_Pwm = balance(KalFilter.angle + Target_Angle, KalFilter.Gyro_x);
 
   // 4. 速度PI控制（40ms周期，每8次5ms执行一次）
   if (++Velocity_Count >= 8) {
@@ -521,8 +534,8 @@ void setup() {
   // --- 按键引脚初始化 ---
   pinMode(KEY, INPUT);
 
-  // --- 串口初始化 ---
-  Serial.begin(9600);
+  // --- 串口初始化（与RDK X5通信 + 调试共用）---
+  Serial.begin(X5_BAUDRATE);
   delay(300);
   Serial.println(F("\n========================================"));
   Serial.println(F("    平衡小车 - 适配版 v1.1"));
@@ -674,13 +687,17 @@ void setup() {
 }
 
 /**************************************************************************
- 函数功能：主循环（200ms输出一次调试信息）
+ 函数功能：主循环
+   - 200ms 调试输出（enable_serial_output 控制）
+   - 20ms 上行数据上报到 RDK X5（enable_x5_uplink 控制）
+   - 串口命令接收
 **************************************************************************/
 void loop() {
   static unsigned long lastTime = 0;
+  static unsigned long lastUplink = 0;
   unsigned long currentTime = millis();
 
-  // 每200ms输出一次状态
+  // --- 每200ms输出一次调试信息 ---
   if (enable_serial_output && (currentTime - lastTime >= 200)) {
     Serial.print(F("Angle:"));
     Serial.print(Angle);
@@ -699,6 +716,192 @@ void loop() {
     Serial.println();
 
     lastTime = currentTime;
+  }
+
+  // --- 每20ms上报一次结构化数据给RDK X5（50Hz）---
+  if (enable_x5_uplink && (currentTime - lastUplink >= X5_UPLINK_MS)) {
+    sendUplink_X5();
+    lastUplink = currentTime;
+  }
+
+  // --- 接收并解析X5下发的命令 ---
+  recvCommand_X5();
+}
+
+/**************************************************************************
+ 函数功能：上行数据上报（50Hz，发送给RDK X5）
+ 数据帧：$IMU,...;ODO,...;STS,...;TGT,spd,steer\r\n
+
+ 字段说明：
+   IMU 段：
+     angle     = 平衡倾角(°)，卡尔曼滤波后
+     gyro_x    = X轴角速度(°/s)，对应前后倾斜
+     gyro_z    = Z轴角速度(°/s)，对应水平旋转
+   ODO 段：
+     l_total   = 左编码器累计脉冲数
+     r_total   = 右编码器累计脉冲数
+     l_vel     = 左轮瞬时速度(40ms脉冲数)
+     r_vel     = 右轮瞬时速度(40ms脉冲数)
+   STS 段：
+     battery   = 电池电压(V)
+     stop      = 启停状态(0=运行, 1=停止)
+   TGT 段（新增）：
+     spd       = 当前目标速度（0=原地平衡）
+     steer     = 当前目标转向量（0=直行）
+**************************************************************************/
+void sendUplink_X5() {
+  Serial.print(F("$IMU,"));
+  Serial.print(KalFilter.angle, 2);      // 2位小数
+  Serial.print(F(","));
+  Serial.print(KalFilter.Gyro_x, 1);     // 1位小数
+  Serial.print(F(","));
+  Serial.print(KalFilter.Gyro_z, 1);
+  Serial.print(F(";ODO,"));
+  Serial.print(Encoder_Left_Total);
+  Serial.print(F(","));
+  Serial.print(Encoder_Right_Total);
+  Serial.print(F(","));
+  Serial.print(Velocity_Left);
+  Serial.print(F(","));
+  Serial.print(Velocity_Right);
+  Serial.print(F(";STS,"));
+  Serial.print(Battery_Voltage, 2);       // 2位小数
+  Serial.print(F(","));
+  Serial.print(Flag_Stop);
+  Serial.print(F(";TGT,"));
+  Serial.print(Target_Speed, 0);
+  Serial.print(F(","));
+  Serial.println(Target_Steering, 0);
+}
+
+/**************************************************************************
+ 函数功能：接收并解析RDK X5下发的控制命令
+ 命令格式：$CMD,操作码[,参数]\r\n
+
+ 支持命令：
+   启停控制：
+     $CMD,START      - 启动平衡控制
+     $CMD,STOP       - 停止平衡控制（同时清零运动目标）
+
+   运动控制（★新增）：
+     $CMD,SPD,50     - 设置目标前进速度（编码器脉冲/40ms，正=前进）
+     $CMD,SPD,-30    - 后退（负值）
+     $CMD,STEER,20   - 设置目标转向量（正=右转）
+     $CMD,HALT       - 停止运动，速度/转向归零（不停止平衡）
+
+   PID调参：
+     $CMD,KP,12.5    - 设置 Balance_Kp
+     $CMD,KD,0.5     - 设置 Balance_Kd
+     $CMD,VKP,1.2    - 设置 Velocity_Kp
+     $CMD,VKI,0.006  - 设置 Velocity_Ki
+     $CMD,TGT,-2.3   - 设置 Target_Angle
+
+   查询/恢复：
+     $CMD,GET        - 回传全部参数  →  $PID,kp,kd,vkp,vki,tgt,spd,steer
+     $CMD,RST        - 恢复默认参数（含运动目标清零）
+**************************************************************************/
+void recvCommand_X5() {
+  if (Serial.available() <= 0) return;
+
+  String cmd = Serial.readStringUntil('\n');
+  cmd.trim();
+  if (!cmd.startsWith(F("$CMD,"))) return;
+
+  // 解析操作码：跳过 "$CMD," (5字符)
+  int sep1 = cmd.indexOf(',', 5);
+  String op = (sep1 == -1) ? cmd.substring(5)
+                            : cmd.substring(5, sep1);
+
+  // ==== 启停控制 ====
+  if (op == F("START")) {
+    Flag_Stop = 0;
+    Serial.println(F("$ACK,START"));
+  }
+  else if (op == F("STOP")) {
+    Flag_Stop = 1;
+    Target_Speed = 0;
+    Target_Steering = 0;
+    Serial.println(F("$ACK,STOP"));
+  }
+
+  // ==== 运动控制（★新增）====
+  else if (op == F("SPD") && sep1 != -1) {
+    float v = cmd.substring(sep1 + 1).toFloat();
+    if (v >= -300.0 && v <= 300.0) {
+      Target_Speed = v;
+      Serial.print(F("$ACK,SPD,")); Serial.println(v);
+    } else Serial.println(F("$NACK,SPD,RANGE"));
+  }
+  else if (op == F("STEER") && sep1 != -1) {
+    float v = cmd.substring(sep1 + 1).toFloat();
+    if (v >= -200.0 && v <= 200.0) {
+      Target_Steering = v;
+      Serial.print(F("$ACK,STEER,")); Serial.println(v);
+    } else Serial.println(F("$NACK,STEER,RANGE"));
+  }
+  else if (op == F("HALT")) {
+    Target_Speed = 0;
+    Target_Steering = 0;
+    Serial.println(F("$ACK,HALT"));
+  }
+
+  // ==== 动态修改PID参数 ====
+  else if (op == F("KP") && sep1 != -1) {
+    float v = cmd.substring(sep1 + 1).toFloat();
+    if (v >= 1.0 && v <= 30.0) {
+      Balance_Kp = v;
+      Serial.print(F("$ACK,KP,")); Serial.println(v);
+    } else Serial.println(F("$NACK,KP,RANGE"));
+  }
+  else if (op == F("KD") && sep1 != -1) {
+    float v = cmd.substring(sep1 + 1).toFloat();
+    if (v >= 0.05 && v <= 2.0) {
+      Balance_Kd = v;
+      Serial.print(F("$ACK,KD,")); Serial.println(v);
+    } else Serial.println(F("$NACK,KD,RANGE"));
+  }
+  else if (op == F("VKP") && sep1 != -1) {
+    float v = cmd.substring(sep1 + 1).toFloat();
+    if (v >= 0.1 && v <= 8.0) {
+      Velocity_Kp = v;
+      Serial.print(F("$ACK,VKP,")); Serial.println(v);
+    } else Serial.println(F("$NACK,VKP,RANGE"));
+  }
+  else if (op == F("VKI") && sep1 != -1) {
+    float v = cmd.substring(sep1 + 1).toFloat();
+    if (v >= 0.001 && v <= 0.1) {
+      Velocity_Ki = v;
+      Serial.print(F("$ACK,VKI,")); Serial.println(v);
+    } else Serial.println(F("$NACK,VKI,RANGE"));
+  }
+  else if (op == F("TGT") && sep1 != -1) {
+    float v = cmd.substring(sep1 + 1).toFloat();
+    if (v >= -10.0 && v <= 10.0) {
+      Target_Angle = v;
+      Serial.print(F("$ACK,TGT,")); Serial.println(v);
+    } else Serial.println(F("$NACK,TGT,RANGE"));
+  }
+
+  // ==== 查询/恢复 ====
+  else if (op == F("GET")) {
+    Serial.print(F("$PID,"));
+    Serial.print(Balance_Kp);    Serial.print(F(","));
+    Serial.print(Balance_Kd);    Serial.print(F(","));
+    Serial.print(Velocity_Kp);   Serial.print(F(","));
+    Serial.print(Velocity_Ki);   Serial.print(F(","));
+    Serial.print(Target_Angle);  Serial.print(F(","));
+    Serial.print(Target_Speed);  Serial.print(F(","));
+    Serial.println(Target_Steering);
+  }
+  else if (op == F("RST")) {
+    Balance_Kp      = 11.0;
+    Balance_Kd      = 0.8;
+    Velocity_Kp     = 2.5;
+    Velocity_Ki     = 0.011;
+    Target_Angle    = -1.0;
+    Target_Speed    = 0;
+    Target_Steering = 0;
+    Serial.println(F("$ACK,RST"));
   }
 }
 
