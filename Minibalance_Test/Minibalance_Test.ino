@@ -1,4 +1,4 @@
- /****************************************************************************
+  /****************************************************************************
   平衡小车 - Arduino 独立测试版
   基于 Minibalance_Nav.ino，移除 X5 通信，添加简单串口命令
 
@@ -112,7 +112,7 @@ int velocity(int encoder_left, int encoder_right) {
   if (Encoder_Integral > 300)   Encoder_Integral -= 200;
   if (Encoder_Integral < -300)  Encoder_Integral += 200;
 
-  Encoder_Least = (encoder_left + encoder_right) - Target_Speed;
+  Encoder_Least = -(encoder_left + encoder_right) - Target_Speed;  // 编码器方向修正：负号匹配电机前进方向
   Encoder *= 0.7;
   Encoder += Encoder_Least * 0.3;
   Encoder_Integral += Encoder;
