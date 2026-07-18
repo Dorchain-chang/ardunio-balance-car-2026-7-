@@ -131,11 +131,11 @@ int velocity(int encoder_left, int encoder_right) {
 }
 
 // ========== 转向控制 ==========
-bool turnEnabled = false;  // 默认关闭转向控制（与原版一致），需要时用 turnon 开启
+bool turnEnabled = true;   // 默认开启转向控制
+float Turn_Kp = 1.0;
+float Turn_Kd = 0.02;
 int turn(float gyro) {
   if (!turnEnabled) return 0;
-  float Turn_Kp = 1.0;
-  float Turn_Kd = 0.02;
   return (int)(Target_Steering * Turn_Kp - gyro * Turn_Kd);
 }
 
@@ -566,9 +566,6 @@ void parseCommand(String cmd) {
     Target_Angle  = -2.3;
     Target_Speed  = 0;
     Target_Steering = 0;
-    Speed_Angle_P  = 0.06;
-    Turn_Kp        = 1.0;
-    Turn_Kd        = 0.02;
     Serial.println(F("[OK] 参数已恢复默认（含校准清零）"));
   }
 
