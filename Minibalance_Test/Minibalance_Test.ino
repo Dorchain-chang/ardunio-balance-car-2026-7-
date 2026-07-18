@@ -1,4 +1,4 @@
-  /****************************************************************************
+     /****************************************************************************
   平衡小车 - Arduino 独立测试版
   基于 Minibalance_Nav.ino，移除 X5 通信，添加简单串口命令
 
@@ -57,6 +57,7 @@ float Velocity_Ki   = 0.01;
 // ========== 运动控制目标 ==========
 float Target_Speed    = 0;
 float Target_Steering = 0;
+float Speed_Angle_P   = 0.06;  // 速度→角度转换系数：s50 → 前倾 3°
 
 // ========== 安全限制 ==========
 #define PWM_MAX 250
@@ -112,7 +113,7 @@ int velocity(int encoder_left, int encoder_right) {
   if (Encoder_Integral > 300)   Encoder_Integral -= 200;
   if (Encoder_Integral < -300)  Encoder_Integral += 200;
 
-  Encoder_Least = -(encoder_left + encoder_right) - Target_Speed;  // 编码器方向修正：负号匹配电机前进方向
+  Encoder_Least = (encoder_left + encoder_right) - 0;  // 速度环仅做阻尼，不主动调速（与原版一致）
   Encoder *= 0.7;
   Encoder += Encoder_Least * 0.3;
   Encoder_Integral += Encoder;
@@ -250,8 +251,8 @@ void control() {
   KalFilter.Angletest(ax, ay, az, gx, gy, gz, DT, Q_ANGLE, Q_GYRO, R_ANGLE, C_0, K1);
   Angle = KalFilter.angle - Calibration_Angle;  // 校准后的角度（平衡点≈0°）
 
-  // 3. 直立PD
-  Balance_Pwm = balance(Angle + Target_Angle, KalFilter.Gyro_x);
+  // 3. 直立PD（速度通过角度偏移控制，而非速度PI直接调速）
+  Balance_Pwm = balance(Angle + Target_Angle - Target_Speed * Speed_Angle_P, KalFilter.Gyro_x);
 
   // 4. 速度PI (40ms)
   if (++Velocity_Count >= 8) {
@@ -350,6 +351,7 @@ void printHelp() {
   Serial.println(F("  h         原地停下（保持平衡，速度清零）"));
   Serial.println(F("  cal       校准平衡角度（握住车在平衡位置后输入）"));
   Serial.println(F("  ta<N>     微调平衡角度  例: ta-1.5"));
+  Serial.println(F("  sap<N>    速度→角度系数  例: sap0.06（越大越激进）"));
   Serial.println(F("  kp<N>     设置 Balance_Kp  例: kp12"));
   Serial.println(F("  kd<N>     设置 Balance_Kd  例: kd0.8"));
   Serial.println(F("  vkp<N>    设置 Velocity_Kp 例: vkp2.5"));
@@ -373,6 +375,7 @@ void printInfo() {
   Serial.print(F("  Target_Angle  = ")); Serial.println(Target_Angle);
   Serial.print(F("  Target_Speed  = ")); Serial.println(Target_Speed);
   Serial.print(F("  Target_Steering= ")); Serial.println(Target_Steering);
+  Serial.print(F("  Speed_Angle_P  = ")); Serial.println(Speed_Angle_P);
   Serial.print(F("  Battery       = ")); Serial.print(Battery_Voltage); Serial.println(F("V"));
   Serial.print(F("  Stop          = ")); Serial.println(Flag_Stop ? F("YES") : F("NO"));
   Serial.println(F("==============================="));
@@ -525,6 +528,13 @@ void parseCommand(String cmd) {
     float v = rest.toFloat();
     if (v >= 0.05 && v <= 2) { Balance_Kd = v; Serial.print(F("[OK] KD = ")); Serial.println(v); }
     else Serial.println(F("[ERR] KD 范围: 0.05 ~ 2"));
+  }
+
+  // sap: speed-to-angle coefficient
+  else if (cmd.startsWith(F("sap"))) {
+    float v = rest.toFloat();
+    if (v >= 0.01 && v <= 0.5) { Speed_Angle_P = v; Serial.print(F("[OK] Speed_Angle_P = ")); Serial.println(v); }
+    else Serial.println(F("[ERR] 范围: 0.01 ~ 0.5 (s50→前倾0.5°~25°)"));
   }
 
   // vkp
