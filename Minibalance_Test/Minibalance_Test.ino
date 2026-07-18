@@ -1,4 +1,4 @@
-      /****************************************************************************
+     /****************************************************************************
   平衡小车 - Arduino 独立测试版
   基于 Minibalance_Nav.ino，移除 X5 通信，添加简单串口命令
 
@@ -57,7 +57,7 @@ float Velocity_Ki   = 0.01;
 // ========== 运动控制目标 ==========
 float Target_Speed    = 0;
 float Target_Steering = 0;
-float Speed_Angle_P   = 0.015; // 速度→角度转换系数：s50 → 前倾 0.75°（温和，避免暴冲）
+float Speed_Angle_P   = 0.06;  // 速度→角度转换系数：s50 → 前倾 3°
 
 // ========== 安全限制 ==========
 #define PWM_MAX 250
@@ -131,11 +131,11 @@ int velocity(int encoder_left, int encoder_right) {
 }
 
 // ========== 转向控制 ==========
-bool turnEnabled = true;   // 默认开启转向控制
-float Turn_Kp = 1.0;
-float Turn_Kd = 0.02;
+bool turnEnabled = false;  // 默认关闭转向控制（与原版一致），需要时用 turnon 开启
 int turn(float gyro) {
   if (!turnEnabled) return 0;
+  float Turn_Kp = 1.0;
+  float Turn_Kd = 0.02;
   return (int)(Target_Steering * Turn_Kp - gyro * Turn_Kd);
 }
 
@@ -356,8 +356,6 @@ void printHelp() {
   Serial.println(F("  kd<N>     设置 Balance_Kd  例: kd0.8"));
   Serial.println(F("  vkp<N>    设置 Velocity_Kp 例: vkp2.5"));
   Serial.println(F("  vki<N>    设置 Velocity_Ki 例: vki0.011"));
-  Serial.println(F("  tp<N>     设置 Turn_Kp      例: tp1.0"));
-  Serial.println(F("  td<N>     设置 Turn_Kd      例: td0.02"));
   Serial.println(F("  info      显示当前参数"));
   Serial.println(F("  reset     恢复默认参数"));
   Serial.println(F("  test      运行自动测试序列"));
@@ -378,8 +376,6 @@ void printInfo() {
   Serial.print(F("  Target_Speed  = ")); Serial.println(Target_Speed);
   Serial.print(F("  Target_Steering= ")); Serial.println(Target_Steering);
   Serial.print(F("  Speed_Angle_P  = ")); Serial.println(Speed_Angle_P);
-  Serial.print(F("  Turn_Kp       = ")); Serial.println(Turn_Kp);
-  Serial.print(F("  Turn_Kd       = ")); Serial.println(Turn_Kd);
   Serial.print(F("  Battery       = ")); Serial.print(Battery_Voltage); Serial.println(F("V"));
   Serial.print(F("  Stop          = ")); Serial.println(Flag_Stop ? F("YES") : F("NO"));
   Serial.println(F("==============================="));
@@ -477,10 +473,10 @@ void parseCommand(String cmd) {
   // speed: s50, s-30, s0
   else if (c == 's' || c == 'S') {
     float v = rest.toFloat();
-    if (v >= -80 && v <= 80) {
+    if (v >= -300 && v <= 300) {
       Target_Speed = v;
       Serial.print(F("[OK] 目标速度 = ")); Serial.println(v);
-    } else Serial.println(F("[ERR] 速度范围: -80 ~ 80"));
+    } else Serial.println(F("[ERR] 速度范围: -300 ~ 300"));
   }
 
   // steer: t20, t-15
@@ -537,8 +533,8 @@ void parseCommand(String cmd) {
   // sap: speed-to-angle coefficient
   else if (cmd.startsWith(F("sap"))) {
     float v = rest.toFloat();
-    if (v >= 0.005 && v <= 0.2) { Speed_Angle_P = v; Serial.print(F("[OK] Speed_Angle_P = ")); Serial.println(v); }
-    else Serial.println(F("[ERR] 范围: 0.005 ~ 0.2"));
+    if (v >= 0.01 && v <= 0.5) { Speed_Angle_P = v; Serial.print(F("[OK] Speed_Angle_P = ")); Serial.println(v); }
+    else Serial.println(F("[ERR] 范围: 0.01 ~ 0.5 (s50→前倾0.5°~25°)"));
   }
 
   // vkp
@@ -553,20 +549,6 @@ void parseCommand(String cmd) {
     float v = rest.toFloat();
     if (v >= 0.001 && v <= 0.1) { Velocity_Ki = v; Serial.print(F("[OK] VKI = ")); Serial.println(v); }
     else Serial.println(F("[ERR] VKI 范围: 0.001 ~ 0.1"));
-  }
-
-  // tp: turn Kp
-  else if (cmd.startsWith(F("tp"))) {
-    float v = rest.toFloat();
-    if (v >= 0.1 && v <= 5) { Turn_Kp = v; Serial.print(F("[OK] Turn_Kp = ")); Serial.println(v); }
-    else Serial.println(F("[ERR] Turn_Kp 范围: 0.1 ~ 5"));
-  }
-
-  // td: turn Kd
-  else if (cmd.startsWith(F("td"))) {
-    float v = rest.toFloat();
-    if (v >= 0 && v <= 0.2) { Turn_Kd = v; Serial.print(F("[OK] Turn_Kd = ")); Serial.println(v); }
-    else Serial.println(F("[ERR] Turn_Kd 范围: 0 ~ 0.2"));
   }
 
   // info
@@ -584,7 +566,7 @@ void parseCommand(String cmd) {
     Target_Angle  = -2.3;
     Target_Speed  = 0;
     Target_Steering = 0;
-    Speed_Angle_P  = 0.015;
+    Speed_Angle_P  = 0.06;
     Turn_Kp        = 1.0;
     Turn_Kd        = 0.02;
     Serial.println(F("[OK] 参数已恢复默认（含校准清零）"));
